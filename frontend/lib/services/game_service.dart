@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math' as Math;
 import 'package:http/http.dart' as http;
 
 import '../config/api_config.dart';
@@ -50,6 +51,81 @@ class GameService {
       onUpdate(data);
     });
   }
+
+  void listenForGameActions(Function(dynamic) onActionUpdate) {
+    print('Setting up game action listeners');
+
+    // Clear existing listeners to avoid duplicates
+    _socketManager.clearListeners('game_action_performed');
+
+    // Listen for actions that might change the pot
+    _socketManager.on('game_action_performed', (data) {
+      print('game_action_performed event received: $data');
+      try {
+        if (data != null) {
+          onActionUpdate(data);
+        }
+      } catch (e) {
+        print('Error processing game action event: $e');
+      }
+    });
+  }
+
+  // Listen for all game-related real-time updates
+  // Listen for all game-related real-time updates with a single handler
+// This consolidates all event handlers to prevent socket disconnection issues
+  void listenForAllGameUpdates(Function(dynamic) onUpdate) {
+    print('Setting up consolidated game update listeners');
+
+    // Clear existing listeners first to avoid duplicate handlers
+    _clearAllGameEventListeners();
+
+    // Create handler function that logs and passes to callback
+    void gameEventHandler(dynamic data) {
+      final eventName = data['action'] ?? 'game_update';
+      print('Received $eventName event: ${data.toString().substring(0, Math.min(100, data.toString().length))}...');
+
+      // Pass to callback
+      onUpdate(data);
+    }
+
+    // Listen for all the different game events with the same handler
+    _socketManager.on('game_update', gameEventHandler);
+    _socketManager.on('game_action_performed', gameEventHandler);
+    _socketManager.on('player_joined', gameEventHandler);
+    _socketManager.on('player_left', gameEventHandler);
+    _socketManager.on('player_kicked', gameEventHandler);
+    _socketManager.on('game_started', gameEventHandler);
+    _socketManager.on('game_ended', gameEventHandler);
+
+    print('Consolidated game event listeners set up');
+  }
+
+  // IMPORTANT: This function clears all game-related event listeners
+// to avoid socket disconnection issues
+  void _clearAllGameEventListeners() {
+    // Clear listeners for all game-related events
+    final gameEvents = [
+      'game_update',
+      'game_action_performed',
+      'player_joined',
+      'player_left',
+      'player_kicked',
+      'game_started',
+      'game_ended'
+    ];
+
+    for (final event in gameEvents) {
+      _socketManager.clearListeners(event);
+    }
+
+    print('Cleared all game event listeners');
+  }
+
+  void cleanupGameListeners() {
+    _clearAllGameEventListeners();
+  }
+
 
   // Listen specifically for player join/leave events
   void listenForPlayerUpdates(Function(GameModel) onPlayerUpdate, [Function(String, String)? onKicked]) {
@@ -616,6 +692,7 @@ class GameService {
   }
 
   // Game action (check, call, raise, fold)
+  // Game action (check, call, raise, fold)
   Future<Map<String, dynamic>> gameAction(
       String gameId,
       String action,
@@ -623,6 +700,15 @@ class GameService {
       {int? amount}
       ) async {
     try {
+      // Make sure we're in the game room before sending action
+      if (!_socketManager.isInRoom(gameId)) {
+        print('Not in game room, rejoining before action: $gameId');
+        _socketManager.joinGameRoom(gameId);
+
+        // Small delay to ensure join completes
+        await Future.delayed(Duration(milliseconds: 300));
+      }
+
       final body = <String, dynamic>{
         'action': action,
       };
@@ -645,15 +731,8 @@ class GameService {
       if (response.statusCode == 200) {
         final game = GameModel.fromJson(responseData['game']);
 
-        // Notify all players about the action
-        _socketManager.emit('game_action', {
-          'gameId': gameId,
-          'action': 'game_action_performed',
-          'actionType': action,
-          'amount': amount,
-          'game': game.toJson(),
-          'timestamp': DateTime.now().toIso8601String()
-        });
+        // We no longer need to manually emit events - the server does this now
+        // Just return the result
 
         return {
           'success': true,
@@ -667,6 +746,7 @@ class GameService {
         };
       }
     } catch (e) {
+      print('Error in gameAction: $e');
       return {
         'success': false,
         'message': 'Network error: ${e.toString()}',

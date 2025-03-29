@@ -13,6 +13,8 @@ class GameModel {
   final DateTime createdAt;
   GameStatus status;
   int currentPlayerIndex;
+  int? pot; // Add pot field
+  int? currentBet; // Add currentBet field
 
   GameModel({
     required this.id,
@@ -24,6 +26,8 @@ class GameModel {
     required this.createdAt,
     this.status = GameStatus.pending,
     this.currentPlayerIndex = 0,
+    this.pot, // Default is null
+    this.currentBet, // Default is null
   });
 
   // Factory constructor to create a GameModel from JSON
@@ -48,6 +52,8 @@ class GameModel {
         createdAt: DateTime.parse(json['createdAt']),
         status: GameStatus.values.byName(json['status']),
         currentPlayerIndex: json['currentPlayerIndex'] ?? 0,
+        pot: json['pot'] != null ? int.tryParse(json['pot'].toString()) : null,
+        currentBet: json['currentBet'] != null ? int.tryParse(json['currentBet'].toString()) : null,
       );
     } catch (e) {
       print('Error parsing game JSON: $e');
@@ -68,6 +74,8 @@ class GameModel {
       'createdAt': createdAt.toIso8601String(),
       'status': status.name,
       'currentPlayerIndex': currentPlayerIndex,
+      'pot': pot,
+      'currentBet': currentBet,
     };
   }
 

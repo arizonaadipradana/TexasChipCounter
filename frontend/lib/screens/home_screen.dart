@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../models/user_model.dart';
 import '../services/auth_service.dart';
 import '../services/game_service.dart'; // Import the game service
+import '../services/transaction_service.dart';
 import 'create_game_screen.dart';
 import 'join_game_screen.dart';
 import 'profile_screen.dart';
@@ -40,68 +41,103 @@ class _HomeScreenState extends State<HomeScreen> {
   void _showTopUpDialog(BuildContext context) {
     final TextEditingController amountController = TextEditingController();
     final userModel = Provider.of<UserModel>(context, listen: false);
+    bool isLoading = false;
 
     showDialog(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Top Up Chips'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text('Enter amount to top up (in rupiah):'),
-            TextField(
-              controller: amountController,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(
-                prefixText: 'Rp ',
-                hintText: '50000',
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setState) => AlertDialog(
+          title: const Text('Top Up Chips'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text('Enter amount to top up (in rupiah):'),
+              TextField(
+                controller: amountController,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                  prefixText: 'Rp ',
+                  hintText: '50000',
+                ),
+                enabled: !isLoading,
               ),
+              const SizedBox(height: 8),
+              const Text(
+                'Note: 1 chip = 500 rupiah',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontStyle: FontStyle.italic,
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: isLoading ? null : () => Navigator.of(ctx).pop(),
+              child: const Text('Cancel'),
             ),
-            const SizedBox(height: 8),
-            const Text(
-              'Note: 1 chip = 500 rupiah',
-              style: TextStyle(
-                fontSize: 12,
-                fontStyle: FontStyle.italic,
-              ),
+            ElevatedButton(
+              onPressed: isLoading ? null : () async {
+                final rupiahAmount = int.tryParse(amountController.text) ?? 0;
+                if (rupiahAmount > 0) {
+                  setState(() {
+                    isLoading = true;
+                  });
+
+                  final chipAmount = (rupiahAmount / 500).floor();
+
+                  // Create transaction service instance
+                  final transactionService = TransactionService();
+
+                  // Call the server API for top-up
+                  final result = await transactionService.topUp(
+                      chipAmount,
+                      userModel.authToken!
+                  );
+
+                  // Pop the dialog whether successful or not
+                  Navigator.of(ctx).pop();
+
+                  if (result['success']) {
+                    // Update chip balance in user model only after confirmed by server
+                    userModel.updateChipBalance(result['chipBalance']);
+
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text('Added $chipAmount chips successfully!'),
+                        backgroundColor: Colors.green,
+                      ),
+                    );
+                  } else {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(result['message']),
+                        backgroundColor: Colors.red,
+                      ),
+                    );
+                  }
+                } else {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Please enter a valid amount'),
+                      backgroundColor: Colors.red,
+                    ),
+                  );
+                }
+              },
+              child: isLoading
+                  ? const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: Colors.white
+                  )
+              )
+                  : const Text('Top Up'),
             ),
           ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () {
-              Navigator.of(ctx).pop();
-            },
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              final rupiahAmount = int.tryParse(amountController.text) ?? 0;
-              if (rupiahAmount > 0) {
-                final chipAmount = (rupiahAmount / 500).floor();
-                userModel.addChips(chipAmount);
-                Navigator.of(ctx).pop();
-
-                // Here you would typically call an API to update the server
-                // For now, we're just updating the local state
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Text('Added $chipAmount chips successfully!'),
-                    backgroundColor: Colors.green,
-                  ),
-                );
-              } else {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('Please enter a valid amount'),
-                    backgroundColor: Colors.red,
-                  ),
-                );
-              }
-            },
-            child: const Text('Top Up'),
-          ),
-        ],
       ),
     );
   }

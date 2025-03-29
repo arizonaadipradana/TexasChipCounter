@@ -9,7 +9,7 @@ class Transaction {
   final int amount;
   final DateTime timestamp;
   final String description;
-  final String? gameId;
+  final String? gameId;  // Mark explicitly as nullable
 
   Transaction({
     required this.id,
@@ -17,18 +17,41 @@ class Transaction {
     required this.amount,
     required this.timestamp,
     required this.description,
-    this.gameId,
+    this.gameId,  // Nullable parameter
   });
 
   // Factory constructor to create a Transaction from JSON
   factory Transaction.fromJson(Map<String, dynamic> json) {
+    // Get the ID field, handling different field names
+    String transactionId = json['_id'] ?? json['id'] ?? '';
+
+    // Get transaction type safely
+    String typeStr = json['type'] ?? 'topUp';  // Default to topUp if missing
+    TransactionType transactionType;
+    try {
+      transactionType = TransactionType.values.byName(typeStr);
+    } catch (e) {
+      // Default to topUp if the type string doesn't match any enum value
+      transactionType = TransactionType.topUp;
+    }
+
+    // Handle timestamp safely
+    DateTime timestampValue;
+    try {
+      timestampValue = json['timestamp'] != null
+          ? DateTime.parse(json['timestamp'])
+          : DateTime.now();
+    } catch (e) {
+      timestampValue = DateTime.now();
+    }
+
     return Transaction(
-      id: json['id'],
-      type: TransactionType.values.byName(json['type']),
-      amount: json['amount'],
-      timestamp: DateTime.parse(json['timestamp']),
-      description: json['description'],
-      gameId: json['gameId'],
+      id: transactionId,
+      type: transactionType,
+      amount: json['amount'] ?? 0,  // Default to 0 if missing
+      timestamp: timestampValue,
+      description: json['description'] ?? 'Transaction',  // Default description if missing
+      gameId: json['gameId'],  // This is already nullable, no need to use ?? here
     );
   }
 

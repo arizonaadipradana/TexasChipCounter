@@ -19,7 +19,7 @@ class ActiveGameScreen extends StatefulWidget {
 class _ActiveGameScreenState extends State<ActiveGameScreen> {
   late GameModel _game;
   GameService? _gameService;
-  UserModel? _userModel; // Changed to nullable
+  UserModel? _userModel;
   int _currentPot = 0;
   int _currentBet = 0;
   final TextEditingController _raiseController = TextEditingController();
@@ -30,7 +30,9 @@ class _ActiveGameScreenState extends State<ActiveGameScreen> {
   void initState() {
     super.initState();
     _game = widget.game;
-    _currentBet = _game.bigBlind; // Initialize with big blind amount
+    // Initialize pot with current game pot value
+    _currentPot = _game.pot ?? 0;
+    _currentBet = _game.currentBet ?? _game.bigBlind; // Initialize with current bet or big blind amount
 
     // Initialize game service after the build is complete
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -52,13 +54,164 @@ class _ActiveGameScreenState extends State<ActiveGameScreen> {
     }
 
     _gameService = GameService();
-    // Don't initialize socket again - it should already be connected
 
     // Make sure we're in the game room
     _gameService?.joinGameRoom(_game.id);
 
-    // Listen for player updates with handling for being kicked
-    _gameService?.listenForPlayerUpdates(_handleGameUpdate, _handlePlayerKicked);
+    // IMPORTANT: Listen for all updates BEFORE setting up specific handlers
+    // to avoid socket disconnect issues
+    _gameService?.listenForAllGameUpdates(_handleAnyGameEvent);
+  }
+
+  void _handleAnyGameEvent(dynamic data) {
+    if (!mounted) return;
+
+    try {
+      // Check if this is game data we can use
+      if (data != null && data['game'] != null) {
+        final updatedGame = GameModel.fromJson(data['game']);
+
+        // Update pot amount and bet if available
+        int newPot = updatedGame.pot ?? _currentPot;
+        int newBet = updatedGame.currentBet ?? _currentBet;
+
+        // Check if game is complete
+        if (updatedGame.status == GameStatus.completed && _game.status != GameStatus.completed) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Game has ended'),
+              backgroundColor: Colors.blue,
+            ),
+          );
+
+          // Clear game ID cache
+          GameService.clearGameIdCache();
+
+          // Return to home screen
+          _exiting = true;
+          Navigator.of(context).pushReplacement(
+            MaterialPageRoute(builder: (context) => const HomeScreen()),
+          );
+          return;
+        }
+
+        // Check if current player is still in the game
+        final currentUserId = _userModel?.id;
+        if (currentUserId != null) {
+          final stillInGame = updatedGame.players.any((p) => p.userId == currentUserId);
+
+          if (!stillInGame) {
+            print('Current player no longer in game, returning to home');
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('You are no longer in this game'),
+                backgroundColor: Colors.red,
+              ),
+            );
+
+            // Clear game ID cache
+            GameService.clearGameIdCache();
+
+            _exiting = true;
+            Navigator.of(context).pushReplacement(
+              MaterialPageRoute(builder: (context) => const HomeScreen()),
+            );
+            return;
+          }
+
+          // Get the current user's player from the updated game
+          final updatedPlayer = updatedGame.players.firstWhere(
+                  (p) => p.userId == currentUserId,
+              orElse: () => _game.players.firstWhere(
+                      (p) => p.userId == currentUserId,
+                  orElse: () => throw Exception('Player not found')
+              )
+          );
+
+          // Check if chip balance changed and update the user model
+          final currentUser = _userModel!;
+          if (updatedPlayer.chipBalance != currentUser.chipBalance) {
+            currentUser.updateChipBalance(updatedPlayer.chipBalance);
+          }
+        }
+
+        // Update the game state
+        setState(() {
+          _game = updatedGame;
+          _currentPot = newPot;
+          _currentBet = newBet;
+        });
+
+        // Display action info if available
+        if (data['action'] == 'game_action_performed' && data['actionType'] != null) {
+          String actionMessage = '';
+
+          // Find the player who performed the action
+          if (data['actionType'] != null) {
+            if (updatedGame.players.isNotEmpty) {
+              // Get the previous player who just acted
+              int previousPlayerIndex = (updatedGame.currentPlayerIndex - 1);
+              if (previousPlayerIndex < 0) previousPlayerIndex = updatedGame.players.length - 1;
+
+              if (previousPlayerIndex >= 0 && previousPlayerIndex < updatedGame.players.length) {
+                final actor = updatedGame.players[previousPlayerIndex];
+
+                actionMessage = '${actor.username} - ${data['actionType']}';
+                if (data['amount'] != null && data['amount'] != 0) {
+                  actionMessage += ' ${data['amount']} chips';
+                }
+
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(actionMessage),
+                    duration: const Duration(seconds: 2),
+                  ),
+                );
+              }
+            }
+          }
+        }
+      }
+    } catch (e) {
+      print('Error handling game event: $e');
+    }
+  }
+
+  void _handleGameAction(dynamic data) {
+    if (!mounted) return;
+
+    try {
+      // Check if this is a pot-affecting action
+      if (data != null && data['game'] != null) {
+        final updatedGame = GameModel.fromJson(data['game']);
+
+        // Update pot amount
+        setState(() {
+          _currentPot = updatedGame.pot ?? _currentPot;
+          _currentBet = updatedGame.currentBet ?? _currentBet;
+        });
+
+        // Also update the full game model
+        _handleGameUpdate(updatedGame);
+
+        // Show a snackbar with the action if provided
+        if (data['actionType'] != null && data['player'] != null) {
+          String actionMessage = '${data['player']} - ${data['actionType']}';
+          if (data['amount'] != null) {
+            actionMessage += ' ${data['amount']} chips';
+          }
+
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(actionMessage),
+              duration: const Duration(seconds: 2),
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      print('Error handling game action: $e');
+    }
   }
 
   void _handlePlayerKicked(String gameId, String kickedBy) {
@@ -85,6 +238,10 @@ class _ActiveGameScreenState extends State<ActiveGameScreen> {
       // Log the update for debugging
       print('Received game update in active game: ${updatedGame.players.length} players');
       print('Game status: ${updatedGame.status}');
+
+      // Update pot value
+      final newPot = updatedGame.pot ?? _currentPot;
+      final newBet = updatedGame.currentBet ?? _currentBet;
 
       // Check if game is complete
       if (updatedGame.status == GameStatus.completed && _game.status != GameStatus.completed) {
@@ -129,11 +286,28 @@ class _ActiveGameScreenState extends State<ActiveGameScreen> {
           );
           return;
         }
+
+        // Get the current user's player from the updated game
+        final updatedPlayer = updatedGame.players.firstWhere(
+                (p) => p.userId == currentUserId,
+            orElse: () => _game.players.firstWhere(
+                    (p) => p.userId == currentUserId,
+                orElse: () => throw Exception('Player not found')
+            )
+        );
+
+        // Check if chip balance changed and update the user model
+        final currentUser = _userModel!;
+        if (updatedPlayer.chipBalance != currentUser.chipBalance) {
+          currentUser.updateChipBalance(updatedPlayer.chipBalance);
+        }
       }
 
       // Update the game state
       setState(() {
         _game = updatedGame;
+        _currentPot = newPot;
+        _currentBet = newBet;
       });
     }
   }
@@ -204,9 +378,13 @@ class _ActiveGameScreenState extends State<ActiveGameScreen> {
 
   @override
   void dispose() {
-    // Only leave the room if explicitly exiting, not for screen refreshes
-    if (!_exiting && _userModel?.authToken != null && _gameService != null) {
-      _gameService!.leaveGameRoom(_game.id);
+    // Only attempt cleanup if not navigating to another screen
+    if (!_exiting && _gameService != null) {
+      // IMPORTANT: Only clean up event listeners without leaving the room
+      _gameService!.cleanupGameListeners();
+
+      // We no longer leave the game room here since that's causing disconnection issues
+      // The room membership is now managed by the SocketManager singleton
     }
 
     _raiseController.dispose();
@@ -264,6 +442,17 @@ class _ActiveGameScreenState extends State<ActiveGameScreen> {
       return;
     }
 
+    // First check if the user has enough chips
+    final currentPlayer = _game.players.firstWhere(
+            (p) => p.userId == _userModel!.id,
+        orElse: () => throw Exception('Player not found')
+    );
+
+    if (currentPlayer.chipBalance < _currentBet) {
+      _showInsufficientChipsDialog();
+      return;
+    }
+
     setState(() {
       _isProcessingAction = true;
     });
@@ -280,6 +469,11 @@ class _ActiveGameScreenState extends State<ActiveGameScreen> {
 
     if (result['success']) {
       _showActionSnackBar('Call: $_currentBet chips');
+
+      // Update user chip balance locally for immediate feedback
+      if (_userModel != null) {
+        _userModel!.subtractChips(_currentBet);
+      }
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -340,6 +534,17 @@ class _ActiveGameScreenState extends State<ActiveGameScreen> {
       return;
     }
 
+    // First check if the user has enough chips for the minimum raise
+    final currentPlayer = _game.players.firstWhere(
+            (p) => p.userId == _userModel!.id,
+        orElse: () => throw Exception('Player not found')
+    );
+
+    if (currentPlayer.chipBalance < _currentBet * 2) {
+      _showInsufficientChipsDialog();
+      return;
+    }
+
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
@@ -372,6 +577,17 @@ class _ActiveGameScreenState extends State<ActiveGameScreen> {
                 return;
               }
 
+              // Check if player has enough chips for the raise
+              if (raiseAmount > currentPlayer.chipBalance) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('You don\'t have enough chips for this raise'),
+                    backgroundColor: Colors.red,
+                  ),
+                );
+                return;
+              }
+
               Navigator.of(context).pop();
 
               setState(() {
@@ -391,6 +607,11 @@ class _ActiveGameScreenState extends State<ActiveGameScreen> {
 
               if (result['success']) {
                 _showActionSnackBar('Raise: $raiseAmount chips');
+
+                // Update user chip balance locally for immediate feedback
+                if (_userModel != null) {
+                  _userModel!.subtractChips(raiseAmount);
+                }
               } else {
                 ScaffoldMessenger.of(context).showSnackBar(
                   SnackBar(
@@ -449,7 +670,7 @@ class _ActiveGameScreenState extends State<ActiveGameScreen> {
             padding: const EdgeInsets.symmetric(horizontal: 16.0),
             child: Center(
               child: Text(
-                'Pot: $_currentPot',
+                'Pot: $_currentPot chips',
                 style: const TextStyle(
                   fontWeight: FontWeight.bold,
                   fontSize: 16,

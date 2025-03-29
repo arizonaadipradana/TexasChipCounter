@@ -23,25 +23,48 @@ class TransactionService {
         },
       );
 
-      final responseData = jsonDecode(response.body);
+      // Print the API response for debugging
+      print('Transaction history API response: ${response.body}');
 
-      if (response.statusCode == 200) {
-        List<Transaction> transactions = (responseData['transactions'] as List)
-            .map((transaction) => Transaction.fromJson(transaction))
-            .toList();
+      try {
+        final responseData = jsonDecode(response.body);
 
-        return {
-          'success': true,
-          'transactions': transactions,
-          'pagination': responseData['pagination'],
-        };
-      } else {
+        if (response.statusCode == 200 && responseData['success'] == true) {
+          // Safe parsing of transactions with error handling
+          List<Transaction> transactions = [];
+
+          if (responseData['transactions'] != null && responseData['transactions'] is List) {
+            for (var transactionJson in responseData['transactions']) {
+              try {
+                transactions.add(Transaction.fromJson(transactionJson));
+              } catch (e) {
+                print('Error parsing individual transaction: $e');
+                print('Problematic transaction JSON: $transactionJson');
+                // Continue parsing other transactions
+              }
+            }
+          }
+
+          return {
+            'success': true,
+            'transactions': transactions,
+            'pagination': responseData['pagination'],
+          };
+        } else {
+          return {
+            'success': false,
+            'message': responseData['message'] ?? 'Failed to get transaction history',
+          };
+        }
+      } catch (e) {
+        print('Error parsing JSON response: $e');
         return {
           'success': false,
-          'message': responseData['message'] ?? 'Failed to get transaction history',
+          'message': 'Error parsing server response: ${e.toString()}',
         };
       }
     } catch (e) {
+      print('Network or other error in getUserTransactions: $e');
       return {
         'success': false,
         'message': 'Network error: ${e.toString()}',
@@ -65,11 +88,19 @@ class TransactionService {
 
       final responseData = jsonDecode(response.body);
 
-      if (response.statusCode == 200) {
-        return {
-          'success': true,
-          'transaction': Transaction.fromJson(responseData['transaction']),
-        };
+      if (response.statusCode == 200 && responseData['success'] == true) {
+        try {
+          return {
+            'success': true,
+            'transaction': Transaction.fromJson(responseData['transaction']),
+          };
+        } catch (e) {
+          print('Error parsing transaction: $e');
+          return {
+            'success': false,
+            'message': 'Error parsing transaction data: ${e.toString()}',
+          };
+        }
       } else {
         return {
           'success': false,
@@ -100,10 +131,20 @@ class TransactionService {
 
       final responseData = jsonDecode(response.body);
 
-      if (response.statusCode == 200) {
-        List<Transaction> transactions = (responseData['transactions'] as List)
-            .map((transaction) => Transaction.fromJson(transaction))
-            .toList();
+      if (response.statusCode == 200 && responseData['success'] == true) {
+        List<Transaction> transactions = [];
+
+        // Safely parse transactions
+        if (responseData['transactions'] != null && responseData['transactions'] is List) {
+          for (var transactionJson in responseData['transactions']) {
+            try {
+              transactions.add(Transaction.fromJson(transactionJson));
+            } catch (e) {
+              print('Error parsing individual game transaction: $e');
+              // Continue parsing other transactions
+            }
+          }
+        }
 
         return {
           'success': true,
@@ -141,21 +182,32 @@ class TransactionService {
         }),
       );
 
-      final responseData = jsonDecode(response.body);
+      print('Top-up API response: ${response.body}');
 
-      if (response.statusCode == 200) {
-        return {
-          'success': true,
-          'message': responseData['message'],
-          'chipBalance': responseData['chipBalance'],
-        };
-      } else {
+      try {
+        final responseData = jsonDecode(response.body);
+
+        if (response.statusCode == 200 && responseData['success'] == true) {
+          return {
+            'success': true,
+            'message': responseData['message'] ?? 'Top-up successful',
+            'chipBalance': responseData['chipBalance'] ?? 0,
+          };
+        } else {
+          return {
+            'success': false,
+            'message': responseData['message'] ?? 'Failed to top up',
+          };
+        }
+      } catch (e) {
+        print('Error parsing top-up response: $e');
         return {
           'success': false,
-          'message': responseData['message'] ?? 'Failed to top up',
+          'message': 'Error processing server response: ${e.toString()}',
         };
       }
     } catch (e) {
+      print('Network error in topUp: $e');
       return {
         'success': false,
         'message': 'Network error: ${e.toString()}',

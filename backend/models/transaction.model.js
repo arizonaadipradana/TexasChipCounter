@@ -41,12 +41,12 @@ transactionSchema.virtual('rupiahAmount').get(function() {
 });
 
 // Method to create a top-up transaction
-transactionSchema.statics.createTopUp = async function(userId, chipAmount) {
+transactionSchema.statics.createTopUp = async function(userId, chipAmount, description = 'Top-up') {
   return this.create({
     userId,
     type: 'topUp',
     amount: chipAmount,
-    description: 'Top-up',
+    description: description,
   });
 };
 

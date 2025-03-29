@@ -37,13 +37,20 @@ class SocketManager {
     if (_socket != null) {
       print('Disconnecting existing socket before creating a new one');
       _socket!.disconnect();
+      _socket = null;
     }
 
     // Create new socket
     _socket = io.io(ApiConfig.baseUrl, <String, dynamic>{
       'transports': ['websocket'],
       'autoConnect': false,
-      'extraHeaders': {'Authorization': 'Bearer $_authToken'}
+      'extraHeaders': {'Authorization': 'Bearer $_authToken'},
+      'forceNew': false,
+      'reconnection': true,
+      'reconnectionAttempts': 10,
+      'reconnectionDelay': 1000,
+      'reconnectionDelayMax': 5000,
+      'timeout': 20000,
     });
 
     // Connect and set up event handlers
@@ -101,18 +108,28 @@ class SocketManager {
 
   /// Join a game room and track it
   void joinGameRoom(String gameId) {
-    if (_socket == null || !_isConnected) {
-      print('Socket not connected, cannot join room: $gameId');
+    if (_socket == null) {
+      print('Socket is null, cannot join room: $gameId');
+
+      // Store the room ID to join later when socket is initialized
+      _joinedRooms.add(gameId);
+      return;
+    }
+
+    if (!_isConnected) {
+      print('Socket not connected, storing room to join later: $gameId');
 
       // Store the room ID to join later when connected
       _joinedRooms.add(gameId);
 
-      // Try to connect if socket exists
-      if (_socket != null && !_isConnected) {
-        print('Attempting to connect socket to join room: $gameId');
-        _socket!.connect();
-      }
+      // Try to connect
+      _socket!.connect();
+      return;
+    }
 
+    // Check if already in this room
+    if (_joinedRooms.contains(gameId)) {
+      print('Already in game room: $gameId, skipping join');
       return;
     }
 
@@ -123,7 +140,17 @@ class SocketManager {
 
   /// Leave a game room and remove from tracking
   void leaveGameRoom(String gameId) {
-    if (_socket == null) return;
+    if (_socket == null) {
+      print('Socket is null, cannot leave room: $gameId');
+      _joinedRooms.remove(gameId);
+      return;
+    }
+
+    if (!_isConnected) {
+      print('Socket not connected, just removing from tracked rooms: $gameId');
+      _joinedRooms.remove(gameId);
+      return;
+    }
 
     print('Leaving game room: $gameId');
     _socket!.emit('leave_game', gameId);
@@ -132,24 +159,23 @@ class SocketManager {
 
   /// Emit an event to the server
   void emit(String event, dynamic data) {
-    if (_socket == null || !_isConnected) {
+    if (_socket == null) {
+      print('Socket is null, cannot emit event: $event');
+      return;
+    }
+
+    if (!_isConnected) {
       print('Socket not connected, cannot emit event: $event');
 
-      // Try to connect if socket exists but not connected
-      if (_socket != null && !_isConnected) {
-        print('Attempting to connect socket to emit event: $event');
-        _socket!.connect();
-
-        // Queue the emit for after connection (basic retry)
-        Future.delayed(Duration(milliseconds: 500), () {
-          if (_isConnected) {
-            print('Socket connected, emitting delayed event: $event');
-            _socket!.emit(event, data);
-          } else {
-            print('Socket still not connected, could not emit event: $event');
-          }
-        });
-      }
+      // Queue the emit for after connection (basic retry)
+      Future.delayed(Duration(milliseconds: 500), () {
+        if (_socket != null && _isConnected) {
+          print('Socket connected, emitting delayed event: $event');
+          _socket!.emit(event, data);
+        } else {
+          print('Socket still not connected, could not emit event: $event');
+        }
+      });
 
       return;
     }
@@ -159,7 +185,10 @@ class SocketManager {
 
   /// Add event listener with tracking to prevent duplicates
   void on(String event, Function(dynamic) handler) {
-    if (_socket == null) return;
+    if (_socket == null) {
+      print('Socket is null, cannot add listener for event: $event');
+      return;
+    }
 
     // Add to our tracking map
     if (!_eventListeners.containsKey(event)) {
@@ -174,6 +203,9 @@ class SocketManager {
 
     _eventListeners[event]!.add(handler);
 
+    // Remove any existing handlers for this event to prevent duplicates
+    _socket!.off(event);
+
     // Add to actual socket
     _socket!.on(event, handler);
     print('Added listener for event: $event');
@@ -181,21 +213,38 @@ class SocketManager {
 
   /// Remove specific event listener
   void off(String event, Function(dynamic) handler) {
-    if (_socket == null) return;
+    if (_socket == null) {
+      print('Socket is null, cannot remove listener for event: $event');
+      return;
+    }
 
     // Remove from our tracking
     if (_eventListeners.containsKey(event)) {
       _eventListeners[event]!.remove(handler);
     }
 
-    // Remove from socket
-    _socket!.off(event, handler);
+    // With Socket.IO client in Flutter, we can't remove specific listeners
+    // We need to remove all and re-add the remaining ones
+    _socket!.off(event);
+
+    // Re-add remaining listeners
+    if (_eventListeners.containsKey(event) && _eventListeners[event]!.isNotEmpty) {
+      for (final remainingHandler in _eventListeners[event]!) {
+        if (remainingHandler != handler) {
+          _socket!.on(event, remainingHandler);
+        }
+      }
+    }
+
     print('Removed listener for event: $event');
   }
 
   /// Clear all listeners for an event
   void clearListeners(String event) {
-    if (_socket == null) return;
+    if (_socket == null) {
+      print('Socket is null, cannot clear listeners for event: $event');
+      return;
+    }
 
     // Clear from socket
     _socket!.off(event);

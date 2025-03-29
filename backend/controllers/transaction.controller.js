@@ -23,12 +23,21 @@ exports.createTransaction = async (req, res) => {
       });
     }
 
-    // Create transaction
+    // Get user info to include in description
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // Create transaction with improved description
     const transaction = new Transaction({
       userId,
       type,
       amount: parseInt(amount),
-      description: description || `${type} transaction`,
+      description: description || `${type === 'topUp' ? 'Top-up' : type} - @${user.username}`,
       gameId: gameId || null
     });
 
@@ -37,11 +46,8 @@ exports.createTransaction = async (req, res) => {
 
     // Update user chip balance if it's a top-up
     if (type === 'topUp') {
-      const user = await User.findById(userId);
-      if (user) {
-        user.chipBalance += parseInt(amount);
-        await user.save();
-      }
+      user.chipBalance += parseInt(amount);
+      await user.save();
     }
 
     return res.status(201).json({

@@ -153,10 +153,12 @@ exports.getCurrentUser = async (req, res) => {
 };
 
 // Top up user's chip balance
+// Top up user's chip balance
 exports.topUp = async (req, res) => {
   try {
     const { amount } = req.body;
     const chipAmount = parseInt(amount);
+    const userId = req.userId;
 
     // Validate amount
     if (!chipAmount || chipAmount <= 0) {
@@ -167,7 +169,7 @@ exports.topUp = async (req, res) => {
     }
 
     // Find user
-    const user = await User.findById(req.userId);
+    const user = await User.findById(userId);
 
     if (!user) {
       return res.status(404).json({
@@ -180,8 +182,12 @@ exports.topUp = async (req, res) => {
     user.chipBalance += chipAmount;
     await user.save();
 
-    // Create transaction record
-    await Transaction.createTopUp(user._id, chipAmount);
+    // Create transaction record with improved description
+    await Transaction.createTopUp(
+      user._id,
+      chipAmount, 
+      `Top-up - @${user.username}`
+    );
 
     return res.status(200).json({
       success: true,
