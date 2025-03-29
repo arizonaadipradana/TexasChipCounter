@@ -496,7 +496,6 @@ exports.getAllGames = async (req, res) => {
   }
 };
 
-// Validate game ID (for 6-character short IDs)
 exports.validateGameId = async (req, res) => {
   try {
     const { shortId } = req.params;
@@ -509,23 +508,35 @@ exports.validateGameId = async (req, res) => {
       });
     }
 
-    // Since we can't use regex directly with ObjectId,
-    // we need to fetch all games and filter in memory
-    const allGames = await Game.find({}).select('_id');
+    // Get all games
+    const allGames = await Game.find({});
+
+    console.log('All game IDs:', allGames.map(g => g._id.toString()));
+    console.log('Short ID to find:', shortId.toUpperCase());
 
     // Find a game where ID starts with the short ID (case insensitive)
     const matchingGame = allGames.find(game => {
       const gameIdStr = game._id.toString();
-      return gameIdStr.toUpperCase().startsWith(shortId.toUpperCase());
+
+      // For UUID-style IDs (checking with and without hyphens)
+      const idWithoutHyphens = gameIdStr.replace(/-/g, '');
+      const shortIdUpper = shortId.toUpperCase();
+
+      // Check if the game ID starts with the short ID (with or without hyphens)
+      return gameIdStr.toUpperCase().startsWith(shortIdUpper) ||
+             idWithoutHyphens.toUpperCase().startsWith(shortIdUpper);
     });
 
     if (!matchingGame) {
+      console.log('No matching game found for shortId:', shortId);
       return res.status(200).json({
         success: true,
         exists: false,
         message: 'No game found with this ID'
       });
     }
+
+    console.log('Matching game found:', matchingGame._id.toString());
 
     // Return the matching game ID
     return res.status(200).json({

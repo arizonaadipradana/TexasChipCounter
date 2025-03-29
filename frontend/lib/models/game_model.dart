@@ -28,19 +28,32 @@ class GameModel {
 
   // Factory constructor to create a GameModel from JSON
   factory GameModel.fromJson(Map<String, dynamic> json) {
-    return GameModel(
-      id: json['id'],
-      name: json['name'],
-      hostId: json['hostId'],
-      players: (json['players'] as List)
-          .map((player) => Player.fromJson(player))
-          .toList(),
-      smallBlind: json['smallBlind'],
-      bigBlind: json['bigBlind'],
-      createdAt: DateTime.parse(json['createdAt']),
-      status: GameStatus.values.byName(json['status']),
-      currentPlayerIndex: json['currentPlayerIndex'] ?? 0,
-    );
+    // Handle different ID formats
+    String id = json['_id'] ?? json['id'];
+    if (id == null) {
+      print('Warning: Game object missing ID field: $json');
+      id = 'unknown';
+    }
+
+    try {
+      return GameModel(
+        id: id,
+        name: json['name'],
+        hostId: json['hostId'],
+        players: (json['players'] as List)
+            .map((player) => Player.fromJson(player))
+            .toList(),
+        smallBlind: json['smallBlind'],
+        bigBlind: json['bigBlind'],
+        createdAt: DateTime.parse(json['createdAt']),
+        status: GameStatus.values.byName(json['status']),
+        currentPlayerIndex: json['currentPlayerIndex'] ?? 0,
+      );
+    } catch (e) {
+      print('Error parsing game JSON: $e');
+      print('Problematic JSON: $json');
+      rethrow;
+    }
   }
 
   // Convert GameModel to JSON

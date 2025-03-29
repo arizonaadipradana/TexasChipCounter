@@ -150,4 +150,33 @@ class AuthService {
       };
     }
   }
+
+  Future<bool> isTokenExpired() async {
+    final token = await getAuthToken();
+    if (token == null) return true;
+
+    // Simple check - if API returns 401, consider token expired
+    try {
+      final response = await http.get(
+        Uri.parse('${ApiConfig.baseUrl}/api/users/me'),
+        headers: {
+          'Authorization': 'Bearer $token',
+        },
+      );
+      return response.statusCode == 401;
+    } catch (e) {
+      return true;
+    }
+  }
+
+  Future<bool> refreshTokenIfNeeded() async {
+    if (await isTokenExpired()) {
+      // Clear expired token
+      await logout();
+
+      // Redirect to login in your app
+      return false;
+    }
+    return true;
+  }
 }

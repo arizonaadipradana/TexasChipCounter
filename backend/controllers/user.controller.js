@@ -224,3 +224,32 @@ exports.getTransactionHistory = async (req, res) => {
     });
   }
 };
+
+exports.refreshToken = async (req, res) => {
+  try {
+    const { refreshToken } = req.body;
+
+    // Validate refresh token
+    // If valid, issue new access token
+
+    // Generate new JWT token
+    const token = jwt.sign(
+      { id: user._id },
+      process.env.JWT_SECRET,
+      { expiresIn: process.env.JWT_EXPIRATION }
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: 'Token refreshed successfully',
+      token
+    });
+  } catch (error) {
+    console.error('Refresh token error:', error);
+    return res.status(401).json({
+      success: false,
+      message: 'Failed to refresh token',
+      error: error.message
+    });
+  }
+};

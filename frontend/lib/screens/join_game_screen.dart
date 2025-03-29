@@ -61,6 +61,8 @@ class _JoinGameScreenState extends State<JoinGameScreen> {
       final gameId = _gameIdController.text.trim().toUpperCase();
       final userModel = Provider.of<UserModel>(context, listen: false);
 
+      print('Attempting to join game with ID: $gameId');
+
       if (userModel.authToken == null) {
         setState(() {
           _isLoading = false;
@@ -70,8 +72,17 @@ class _JoinGameScreenState extends State<JoinGameScreen> {
       }
 
       try {
+        // Show a temporary message
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Validating game ID...'),
+            duration: Duration(seconds: 1),
+          ),
+        );
+
         // First validate the game ID
         final validation = await _gameService.validateGameId(gameId, userModel.authToken!);
+        print('Game validation result: $validation');
 
         if (!validation['exists']) {
           setState(() {
@@ -81,8 +92,17 @@ class _JoinGameScreenState extends State<JoinGameScreen> {
           return;
         }
 
+        // Show another temporary message
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Game found! Joining now...'),
+            duration: Duration(seconds: 1),
+          ),
+        );
+
         // Now try to join the game
         final result = await _gameService.joinGame(gameId, userModel.authToken!);
+        print('Join game result: $result');
 
         setState(() {
           _isLoading = false;
@@ -90,10 +110,23 @@ class _JoinGameScreenState extends State<JoinGameScreen> {
 
         if (result['success']) {
           final game = result['game'] as GameModel;
+          final alreadyJoined = result['alreadyJoined'] == true;
 
-          // Navigate to the game lobby
+          if (alreadyJoined) {
+            print('Player was already in the game, rejoining lobby');
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('You are already in this game. Rejoining lobby...'),
+                duration: Duration(seconds: 2),
+              ),
+            );
+          } else {
+            print('Successfully joined game as new player');
+          }
+
+          // Navigate to the game lobby in either case
           if (mounted) {
-            Navigator.of(context).push(
+            Navigator.of(context).pushReplacement(
               MaterialPageRoute(
                 builder: (context) => GameLobbyScreen(game: game),
               ),
@@ -105,6 +138,7 @@ class _JoinGameScreenState extends State<JoinGameScreen> {
           });
         }
       } catch (e) {
+        print('Error in join game process: $e');
         setState(() {
           _isLoading = false;
           _errorMessage = 'An error occurred: ${e.toString()}';

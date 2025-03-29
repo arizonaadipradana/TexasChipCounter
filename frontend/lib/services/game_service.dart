@@ -4,6 +4,7 @@ import 'package:socket_io_client/socket_io_client.dart' as io;
 
 import '../config/api_config.dart';
 import '../models/game_model.dart';
+import 'auth_service.dart';
 
 class GameService {
   late io.Socket _socket;
@@ -26,6 +27,9 @@ class GameService {
 
     _socket.onConnect((_) {
       print('Connected to the game server');
+
+      // Authenticate the socket connection
+      _socket.emit('authenticate', {'token': _authToken});
     });
 
     _socket.onDisconnect((_) {
@@ -34,6 +38,15 @@ class GameService {
 
     _socket.onError((error) {
       print('Socket error: $error');
+    });
+
+    // Set up default listeners for common events
+    _socket.on('socket_joined', (data) {
+      print('New socket joined: ${data['socketId']}');
+    });
+
+    _socket.on('socket_left', (data) {
+      print('Socket left: ${data['socketId']}');
     });
   }
 
@@ -46,11 +59,13 @@ class GameService {
 
   // Join a game room for real-time updates
   void joinGameRoom(String gameId) {
+    print('Joining game room: $gameId');
     _socket.emit('join_game', gameId);
   }
 
   // Leave a game room
   void leaveGameRoom(String gameId) {
+    print('Leaving game room: $gameId');
     _socket.emit('leave_game', gameId);
   }
 
@@ -63,14 +78,39 @@ class GameService {
 
   // Listen specifically for player join/leave events
   void listenForPlayerUpdates(Function(GameModel) onPlayerUpdate) {
+    print('Setting up player update listeners');
+
     _socket.on('player_joined', (data) {
-      final updatedGame = GameModel.fromJson(data['game']);
-      onPlayerUpdate(updatedGame);
+      print('player_joined event received: $data');
+      try {
+        final updatedGame = GameModel.fromJson(data['game']);
+        onPlayerUpdate(updatedGame);
+      } catch (e) {
+        print('Error processing player_joined event: $e');
+      }
     });
 
     _socket.on('player_left', (data) {
-      final updatedGame = GameModel.fromJson(data['game']);
-      onPlayerUpdate(updatedGame);
+      print('player_left event received: $data');
+      try {
+        final updatedGame = GameModel.fromJson(data['game']);
+        onPlayerUpdate(updatedGame);
+      } catch (e) {
+        print('Error processing player_left event: $e');
+      }
+    });
+
+    // Also listen for generic game updates as a fallback
+    _socket.on('game_update', (data) {
+      print('game_update event received: $data');
+      try {
+        if (data['game'] != null) {
+          final updatedGame = GameModel.fromJson(data['game']);
+          onPlayerUpdate(updatedGame);
+        }
+      } catch (e) {
+        print('Error processing game_update event: $e');
+      }
     });
   }
 
@@ -87,19 +127,23 @@ class GameService {
 
   // Notify when a player joins
   void notifyPlayerJoined(String gameId, GameModel updatedGame) {
+    print('Emitting player_joined event for game: $gameId');
     _socket.emit('game_action', {
       'gameId': gameId,
       'action': 'player_joined',
-      'game': updatedGame.toJson()
+      'game': updatedGame.toJson(),
+      'timestamp': DateTime.now().toIso8601String()
     });
   }
 
   // Notify when a player is removed
   void notifyPlayerRemoved(String gameId, GameModel updatedGame) {
+    print('Emitting player_left event for game: $gameId');
     _socket.emit('game_action', {
       'gameId': gameId,
       'action': 'player_left',
-      'game': updatedGame.toJson()
+      'game': updatedGame.toJson(),
+      'timestamp': DateTime.now().toIso8601String()
     });
   }
 
@@ -109,12 +153,15 @@ class GameService {
       // First check local map for faster response
       final fullId = getFullGameId(shortId);
       if (fullId != null) {
+        print('Found game ID in local cache: $fullId for short ID: $shortId');
         return {
           'success': true,
           'gameId': fullId,
           'exists': true,
         };
       }
+
+      print('Validating game ID with server: $shortId');
 
       // If not in local map, check with server
       final response = await http.get(
@@ -125,13 +172,20 @@ class GameService {
         },
       );
 
+      print('Validation response status: ${response.statusCode}');
+      print('Validation response body: ${response.body}');
+
       final responseData = jsonDecode(response.body);
 
       if (response.statusCode == 200 && responseData['success']) {
         // Save the mapping for future reference if it exists
         if (responseData['exists'] && responseData['gameId'] != null) {
           _gameIdMap[shortId.toUpperCase()] = responseData['gameId'];
+          print('Saved game ID mapping: ${shortId.toUpperCase()} -> ${responseData['gameId']}');
+        } else {
+          print('Game with ID $shortId does not exist on the server');
         }
+
         return {
           'success': true,
           'gameId': responseData['gameId'],
@@ -139,36 +193,14 @@ class GameService {
         };
       }
 
-      // Fallback - for demo/temporary use, we can create a mock ID
-      // In a real app, you would remove this fallback
-      if (shortId == 'E21E27') {  // Special case for testing
-        final mockId = '5f8a75e21e27b35d8c1d8e7a';  // This is a valid ObjectId format
-        _gameIdMap[shortId.toUpperCase()] = mockId;
-        return {
-          'success': true,
-          'gameId': mockId,
-          'exists': true,
-        };
-      }
-
+      print('Failed to validate game ID: ${responseData['message']}');
       return {
         'success': false,
         'message': responseData['message'] ?? 'Game not found',
         'exists': false,
       };
     } catch (e) {
-      // For demo/temporary use, add a special case fallback
-      // In a real app, you would remove this fallback
-      if (shortId == 'E21E27') {  // Special case for testing
-        final mockId = '5f8a75e21e27b35d8c1d8e7a';  // This is a valid ObjectId format
-        _gameIdMap[shortId.toUpperCase()] = mockId;
-        return {
-          'success': true,
-          'gameId': mockId,
-          'exists': true,
-        };
-      }
-
+      print('Error validating game ID: $e');
       return {
         'success': false,
         'message': 'Network error: ${e.toString()}',
@@ -224,16 +256,37 @@ class GameService {
     }
   }
 
-  // Join a game
-  Future<Map<String, dynamic>> joinGame(
-      String gameId,
-      String authToken,
-      ) async {
+  Future<String?> _getUserIdFromToken(String token) async {
     try {
+      // Make a request to the user info endpoint
+      final response = await http.get(
+        Uri.parse('${ApiConfig.baseUrl}/api/users/me'),
+        headers: {
+          'Authorization': 'Bearer $token',
+        },
+      );
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        return data['user']['_id'];
+      }
+    } catch (e) {
+      print('Error getting user ID from token: $e');
+    }
+    return null;
+  }
+
+  // Join a game
+  Future<Map<String, dynamic>> joinGame(String gameId, String authToken) async {
+    try {
+      print('Attempting to join game with ID: $gameId');
+
       // First validate if the game exists
       final validation = await validateGameId(gameId, authToken);
+      print('Game validation result: $validation');
 
       if (!validation['exists']) {
+        print('Game does not exist according to validation');
         return {
           'success': false,
           'message': 'Invalid Game ID. Please check and try again.',
@@ -241,7 +294,29 @@ class GameService {
       }
 
       final fullGameId = validation['gameId'];
+      print('Full game ID for joining: $fullGameId');
 
+      // First get the game details to check if player is already in the game
+      final gameDetails = await getGame(fullGameId, authToken);
+      if (gameDetails['success']) {
+        // Check if the player is already in this game
+        final game = gameDetails['game'] as GameModel;
+        final userId = await _getUserIdFromToken(authToken);
+
+        if (userId != null) {
+          final isPlayerInGame = game.players.any((player) => player.userId == userId);
+          if (isPlayerInGame) {
+            print('Player is already in this game, returning game object directly');
+            return {
+              'success': true,
+              'game': game,
+              'alreadyJoined': true,
+            };
+          }
+        }
+      }
+
+      // Player not in the game yet, proceed with join request
       final response = await http.post(
         Uri.parse('${ApiConfig.baseUrl}${ApiConfig.gamesEndpoint}/$fullGameId/join'),
         headers: {
@@ -250,9 +325,13 @@ class GameService {
         },
       );
 
+      print('Join game response status: ${response.statusCode}');
+      print('Join game response body: ${response.body}');
+
       final responseData = jsonDecode(response.body);
 
       if (response.statusCode == 200) {
+        print('Successfully joined game');
         final game = GameModel.fromJson(responseData['game']);
 
         // Notify all players about the new player
@@ -262,13 +341,31 @@ class GameService {
           'success': true,
           'game': game,
         };
+      } else if (response.statusCode == 400 &&
+          responseData['message']?.contains('already in this game') == true) {
+        // Handle the "already in game" case
+        print('Player is already in this game according to server');
+
+        // Get the game details again to get the latest state
+        final latestGame = await getGame(fullGameId, authToken);
+        if (latestGame['success']) {
+          return {
+            'success': true,
+            'game': latestGame['game'],
+            'alreadyJoined': true,
+          };
+        } else {
+          return latestGame; // Return the error from getGame
+        }
       } else {
+        print('Failed to join game: ${responseData['message']}');
         return {
           'success': false,
           'message': responseData['message'] ?? 'Failed to join game',
         };
       }
     } catch (e) {
+      print('Error joining game: $e');
       return {
         'success': false,
         'message': 'Network error: ${e.toString()}',

@@ -3,9 +3,11 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../models/game_model.dart';
+import '../models/player_model.dart';
 import '../models/user_model.dart';
 import '../services/game_service.dart';
 import 'active_game_screen.dart';
+import 'login_screen.dart';
 
 class GameLobbyScreen extends StatefulWidget {
   final GameModel game;
@@ -57,7 +59,7 @@ class _GameLobbyScreenState extends State<GameLobbyScreen> {
     // Join the game room for real-time updates
     _gameService.joinGameRoom(_game.id);
 
-    // Listen for player join/leave events
+    // Listen for player join/leave events with an enhanced callback
     _gameService.listenForPlayerUpdates(_handlePlayerUpdate);
   }
 
@@ -67,14 +69,43 @@ class _GameLobbyScreenState extends State<GameLobbyScreen> {
         _game = updatedGame;
       });
 
-      // Show a snack bar notification when a player joins or leaves
-      final playerCount = _game.players.length;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Game updated: $playerCount ${playerCount == 1 ? "player" : "players"} in lobby'),
-          duration: const Duration(seconds: 1),
-        ),
-      );
+      // Calculate what changed
+      final oldPlayers = _game.players.map((p) => p.userId).toSet();
+      final newPlayers = updatedGame.players.map((p) => p.userId).toSet();
+
+      // New players
+      final addedPlayers = newPlayers.difference(oldPlayers);
+      // Players who left
+      final removedPlayers = oldPlayers.difference(newPlayers);
+
+      if (addedPlayers.isNotEmpty) {
+        // Find the name of the player who joined
+        final joinedPlayer = updatedGame.players.firstWhere(
+              (p) => addedPlayers.contains(p.userId),
+          orElse: () => Player(userId: '', username: 'Someone', chipBalance: 0),
+        );
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('${joinedPlayer.username} joined the game'),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+
+      if (removedPlayers.isNotEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('A player left the game'),
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+
+      // If none of the above, it's a general update
+      if (addedPlayers.isEmpty && removedPlayers.isEmpty && oldPlayers.isNotEmpty) {
+        print('General game update received');
+      }
     }
   }
 
@@ -87,6 +118,25 @@ class _GameLobbyScreenState extends State<GameLobbyScreen> {
         ),
       );
     });
+  }
+
+  void _handleApiError(dynamic result) {
+    if (result is Map<String, dynamic> &&
+        result['tokenExpired'] == true) {
+      // Token expired, redirect to login
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Your session has expired. Please log in again.'),
+          backgroundColor: Colors.red,
+        ),
+      );
+
+      // Navigate to login screen
+      Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute(builder: (context) => const LoginScreen()),
+            (route) => false,
+      );
+    }
   }
 
   Future<void> _startGame() async {

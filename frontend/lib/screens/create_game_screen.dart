@@ -5,6 +5,7 @@ import 'package:uuid/uuid.dart';
 import '../models/user_model.dart';
 import '../models/game_model.dart';
 import '../models/player_model.dart';
+import '../services/game_service.dart';
 import 'game_lobby_screen.dart';
 
 class CreateGameScreen extends StatefulWidget {
@@ -30,47 +31,103 @@ class _CreateGameScreenState extends State<CreateGameScreen> {
     super.dispose();
   }
 
-  void _createGame() {
+  void _createGame() async {
     if (_formKey.currentState!.validate()) {
       setState(() {
         _isLoading = true;
       });
 
       final userModel = Provider.of<UserModel>(context, listen: false);
+      final gameService = GameService();
 
-      // Create a unique ID for the game
-      final gameId = const Uuid().v4();
+      // In real app, make API call to create game instead of local creation
+      if (userModel.authToken != null) {
+        try {
+          final result = await gameService.createGame(
+            _gameNameController.text.trim(),
+            int.parse(_smallBlindController.text),
+            int.parse(_bigBlindController.text),
+            userModel.authToken!,
+          );
 
-      // Create a player object for the host
-      final hostPlayer = Player(
-        userId: userModel.id!,
-        username: userModel.username!,
-        chipBalance: userModel.chipBalance,
-      );
+          setState(() {
+            _isLoading = false;
+          });
 
-      // Create the game model
-      final game = GameModel(
-        id: gameId,
-        name: _gameNameController.text.trim(),
-        hostId: userModel.id!,
-        players: [hostPlayer],
-        smallBlind: int.parse(_smallBlindController.text),
-        bigBlind: int.parse(_bigBlindController.text),
-        createdAt: DateTime.now(),
-      );
+          if (result['success']) {
+            final game = result['game'] as GameModel;
 
-      // In a real app, you would make an API call to create the game on the server
-      // For now, we'll just navigate to the game lobby
+            // Output the game ID and its short version for debugging
+            final shortId = game.id.substring(0, 6).toUpperCase();
+            print('Created game with ID: ${game.id}');
+            print('Short ID for sharing: $shortId');
 
-      setState(() {
-        _isLoading = false;
-      });
+            // Register the ID for easy lookup
+            GameService.registerGameId(game.id);
 
-      Navigator.of(context).push(
-        MaterialPageRoute(
-          builder: (context) => GameLobbyScreen(game: game),
-        ),
-      );
+            // Navigate to the game lobby
+            Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (context) => GameLobbyScreen(game: game),
+              ),
+            );
+          } else {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(result['message']),
+                backgroundColor: Colors.red,
+              ),
+            );
+          }
+        } catch (e) {
+          setState(() {
+            _isLoading = false;
+          });
+
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Error creating game: ${e.toString()}'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+      } else {
+        // Fallback to local creation for testing/demo only
+        // Note: This shouldn't be used in production
+        final gameId = const Uuid().v4();
+
+        // Log and register the ID
+        print('Created local test game with ID: $gameId');
+        print('Short ID for sharing: ${gameId.substring(0, 6).toUpperCase()}');
+        GameService.registerGameId(gameId);
+
+        // Create the player and game objects
+        final hostPlayer = Player(
+          userId: userModel.id!,
+          username: userModel.username!,
+          chipBalance: userModel.chipBalance,
+        );
+
+        final game = GameModel(
+          id: gameId,
+          name: _gameNameController.text.trim(),
+          hostId: userModel.id!,
+          players: [hostPlayer],
+          smallBlind: int.parse(_smallBlindController.text),
+          bigBlind: int.parse(_bigBlindController.text),
+          createdAt: DateTime.now(),
+        );
+
+        setState(() {
+          _isLoading = false;
+        });
+
+        Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (context) => GameLobbyScreen(game: game),
+          ),
+        );
+      }
     }
   }
 

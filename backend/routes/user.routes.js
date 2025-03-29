@@ -13,4 +13,6 @@ router.get('/me', verifyToken, userController.getCurrentUser);
 router.post('/topup', verifyToken, userController.topUp);
 router.get('/transactions', verifyToken, userController.getTransactionHistory);
 
+router.post('/refresh-token', userController.refreshToken);
+
 module.exports = router;
