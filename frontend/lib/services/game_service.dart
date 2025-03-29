@@ -146,6 +146,11 @@ class GameService {
     return _gameIdMap[shortId.toUpperCase()];
   }
 
+  static void clearGameIdCache() {
+    _gameIdMap.clear();
+    print('Game ID cache cleared');
+  }
+
   // Notify when a player joins
   void notifyPlayerJoined(String gameId, GameModel updatedGame) {
     print('Emitting player_joined event for game: $gameId');

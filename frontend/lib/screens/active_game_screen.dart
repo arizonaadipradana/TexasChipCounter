@@ -18,12 +18,13 @@ class ActiveGameScreen extends StatefulWidget {
 
 class _ActiveGameScreenState extends State<ActiveGameScreen> {
   late GameModel _game;
-  late GameService _gameService;
-  late UserModel _userModel;
+  GameService? _gameService;
+  UserModel? _userModel; // Changed to nullable
   int _currentPot = 0;
   int _currentBet = 0;
   final TextEditingController _raiseController = TextEditingController();
   bool _exiting = false;
+  bool _isProcessingAction = false;
 
   @override
   void initState() {
@@ -40,7 +41,7 @@ class _ActiveGameScreenState extends State<ActiveGameScreen> {
   void _initializeGameService() {
     // Get user model from provider
     _userModel = Provider.of<UserModel>(context, listen: false);
-    if (_userModel.authToken == null) {
+    if (_userModel?.authToken == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Authentication error. Please log in again.'),
@@ -54,10 +55,10 @@ class _ActiveGameScreenState extends State<ActiveGameScreen> {
     // Don't initialize socket again - it should already be connected
 
     // Make sure we're in the game room
-    _gameService.joinGameRoom(_game.id);
+    _gameService?.joinGameRoom(_game.id);
 
     // Listen for player updates with handling for being kicked
-    _gameService.listenForPlayerUpdates(_handleGameUpdate, _handlePlayerKicked);
+    _gameService?.listenForPlayerUpdates(_handleGameUpdate, _handlePlayerKicked);
   }
 
   void _handlePlayerKicked(String gameId, String kickedBy) {
@@ -94,6 +95,9 @@ class _ActiveGameScreenState extends State<ActiveGameScreen> {
           ),
         );
 
+        // Clear game ID cache
+        GameService.clearGameIdCache();
+
         // Return to home screen
         _exiting = true;
         Navigator.of(context).pushReplacement(
@@ -103,7 +107,7 @@ class _ActiveGameScreenState extends State<ActiveGameScreen> {
       }
 
       // Check if current player is still in the game
-      final currentUserId = _userModel.id;
+      final currentUserId = _userModel?.id;
       if (currentUserId != null) {
         final stillInGame = updatedGame.players.any((p) => p.userId == currentUserId);
 
@@ -115,6 +119,9 @@ class _ActiveGameScreenState extends State<ActiveGameScreen> {
               backgroundColor: Colors.red,
             ),
           );
+
+          // Clear game ID cache
+          GameService.clearGameIdCache();
 
           _exiting = true;
           Navigator.of(context).pushReplacement(
@@ -155,9 +162,22 @@ class _ActiveGameScreenState extends State<ActiveGameScreen> {
     if (!confirm) return;
 
     // Call API to end the game
-    final result = await _gameService.endGame(_game.id, _userModel.authToken!);
+    if (_gameService == null || _userModel?.authToken == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Error: Service not initialized'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
+    final result = await _gameService!.endGame(_game.id, _userModel!.authToken!);
 
     if (result['success']) {
+      // Clear game ID cache
+      GameService.clearGameIdCache();
+
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Game ended successfully'),
@@ -185,52 +205,141 @@ class _ActiveGameScreenState extends State<ActiveGameScreen> {
   @override
   void dispose() {
     // Only leave the room if explicitly exiting, not for screen refreshes
-    if (!_exiting && _userModel?.authToken != null) {
-      _gameService?.leaveGameRoom(_game.id);
+    if (!_exiting && _userModel?.authToken != null && _gameService != null) {
+      _gameService!.leaveGameRoom(_game.id);
     }
 
     _raiseController.dispose();
     super.dispose();
   }
 
-  void _nextTurn() {
+  // Use server API to perform check action
+  void _handleCheck() async {
+    if (_gameService == null || _userModel?.authToken == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Error: Service not initialized'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
     setState(() {
-      _game.nextTurn();
+      _isProcessingAction = true;
     });
-  }
 
-  void _handleCheck() {
-    // In a real app, you would make an API call to update the game state
-    _nextTurn();
-    _showActionSnackBar('Check');
-  }
+    final result = await _gameService!.gameAction(
+      _game.id,
+      'check',
+      _userModel!.authToken!,
+    );
 
-  void _handleCall() {
-    final player = _game.currentPlayer;
+    setState(() {
+      _isProcessingAction = false;
+    });
 
-    if (player.chipBalance >= _currentBet) {
-      setState(() {
-        player.removeChips(_currentBet);
-        _currentPot += _currentBet;
-      });
-
-      _nextTurn();
-      _showActionSnackBar('Call: $_currentBet chips');
+    if (result['success']) {
+      // The game will be updated via socket events
+      _showActionSnackBar('Check');
     } else {
-      _showInsufficientChipsDialog();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(result['message']),
+          backgroundColor: Colors.red,
+        ),
+      );
     }
   }
 
-  void _handleFold() {
+  // Use server API to perform call action
+  void _handleCall() async {
+    if (_gameService == null || _userModel?.authToken == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Error: Service not initialized'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
     setState(() {
-      _game.currentPlayer.setInactive();
+      _isProcessingAction = true;
     });
 
-    _nextTurn();
-    _showActionSnackBar('Fold');
+    final result = await _gameService!.gameAction(
+      _game.id,
+      'call',
+      _userModel!.authToken!,
+    );
+
+    setState(() {
+      _isProcessingAction = false;
+    });
+
+    if (result['success']) {
+      _showActionSnackBar('Call: $_currentBet chips');
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(result['message']),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
   }
 
+  // Use server API to perform fold action
+  void _handleFold() async {
+    if (_gameService == null || _userModel?.authToken == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Error: Service not initialized'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
+    setState(() {
+      _isProcessingAction = true;
+    });
+
+    final result = await _gameService!.gameAction(
+      _game.id,
+      'fold',
+      _userModel!.authToken!,
+    );
+
+    setState(() {
+      _isProcessingAction = false;
+    });
+
+    if (result['success']) {
+      _showActionSnackBar('Fold');
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(result['message']),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
+  // Use server API to perform raise action
   void _handleRaise() {
+    if (_gameService == null || _userModel?.authToken == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Error: Service not initialized'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
@@ -251,7 +360,7 @@ class _ActiveGameScreenState extends State<ActiveGameScreen> {
             child: const Text('Cancel'),
           ),
           ElevatedButton(
-            onPressed: () {
+            onPressed: () async {
               final raiseAmount = int.tryParse(_raiseController.text) ?? 0;
               if (raiseAmount < _currentBet * 2) {
                 ScaffoldMessenger.of(context).showSnackBar(
@@ -263,20 +372,32 @@ class _ActiveGameScreenState extends State<ActiveGameScreen> {
                 return;
               }
 
-              final player = _game.currentPlayer;
-              if (player.chipBalance >= raiseAmount) {
-                setState(() {
-                  player.removeChips(raiseAmount);
-                  _currentPot += raiseAmount;
-                  _currentBet = raiseAmount;
-                });
+              Navigator.of(context).pop();
 
-                _nextTurn();
-                Navigator.of(context).pop();
+              setState(() {
+                _isProcessingAction = true;
+              });
+
+              final result = await _gameService!.gameAction(
+                _game.id,
+                'raise',
+                _userModel!.authToken!,
+                amount: raiseAmount,
+              );
+
+              setState(() {
+                _isProcessingAction = false;
+              });
+
+              if (result['success']) {
                 _showActionSnackBar('Raise: $raiseAmount chips');
               } else {
-                Navigator.of(context).pop();
-                _showInsufficientChipsDialog();
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(result['message']),
+                    backgroundColor: Colors.red,
+                  ),
+                );
               }
             },
             child: const Text('Raise'),
@@ -395,7 +516,7 @@ class _ActiveGameScreenState extends State<ActiveGameScreen> {
           ),
 
           // End game button (for host only)
-          if (_userModel?.id == _game.hostId) ...[
+          if (userModel.id == _game.hostId) ...[
             Container(
               width: double.infinity,
               padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
@@ -433,25 +554,25 @@ class _ActiveGameScreenState extends State<ActiveGameScreen> {
                         label: 'Fold',
                         color: Colors.red,
                         icon: Icons.close,
-                        onPressed: _handleFold,
+                        onPressed: _isProcessingAction ? null : _handleFold,
                       ),
                       PokerActionButton(
                         label: 'Check',
                         color: Colors.amber,
                         icon: Icons.check,
-                        onPressed: _handleCheck,
+                        onPressed: _isProcessingAction ? null : _handleCheck,
                       ),
                       PokerActionButton(
                         label: 'Call',
                         color: Colors.green,
                         icon: Icons.call,
-                        onPressed: _handleCall,
+                        onPressed: _isProcessingAction ? null : _handleCall,
                       ),
                       PokerActionButton(
                         label: 'Raise',
                         color: Colors.purple,
                         icon: Icons.arrow_upward,
-                        onPressed: _handleRaise,
+                        onPressed: _isProcessingAction ? null : _handleRaise,
                       ),
                     ],
                   ),

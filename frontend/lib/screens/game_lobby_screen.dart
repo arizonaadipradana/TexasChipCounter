@@ -7,7 +7,7 @@ import '../models/player_model.dart';
 import '../models/user_model.dart';
 import '../services/game_service.dart';
 import 'active_game_screen.dart';
-import 'login_screen.dart';
+import 'home_screen.dart';
 
 class GameLobbyScreen extends StatefulWidget {
   final GameModel game;
@@ -22,8 +22,8 @@ class _GameLobbyScreenState extends State<GameLobbyScreen> {
   late GameModel _game;
   bool _isLoading = false;
   late String _shortGameId;
-  late GameService _gameService;
-  late UserModel _userModel;
+  GameService? _gameService;
+  UserModel? _userModel; // Nullable to prevent initialization errors
 
   // Add a flag to track if navigating to game screen to avoid unnecessary cleanup
   bool _navigatingToGameScreen = false;
@@ -46,7 +46,7 @@ class _GameLobbyScreenState extends State<GameLobbyScreen> {
   void _initializeGameService() {
     // Get user model from provider
     _userModel = Provider.of<UserModel>(context, listen: false);
-    if (_userModel.authToken == null) {
+    if (_userModel?.authToken == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Authentication error. Please log in again.'),
@@ -57,13 +57,13 @@ class _GameLobbyScreenState extends State<GameLobbyScreen> {
     }
 
     _gameService = GameService();
-    _gameService.initSocket(_userModel.authToken!, userId: _userModel.id);
+    _gameService?.initSocket(_userModel!.authToken!, userId: _userModel?.id);
 
     // Join the game room for real-time updates
-    _gameService.joinGameRoom(_game.id);
+    _gameService?.joinGameRoom(_game.id);
 
     // Listen for player join/leave events with an enhanced callback
-    _gameService.listenForPlayerUpdates(_handlePlayerUpdate, _handlePlayerKicked);
+    _gameService?.listenForPlayerUpdates(_handlePlayerUpdate, _handlePlayerKicked);
   }
 
   void _handlePlayerKicked(String gameId, String kickedBy) {
@@ -104,7 +104,7 @@ class _GameLobbyScreenState extends State<GameLobbyScreen> {
       }
 
       // Check if current player is still in the game
-      final currentUserId = _userModel.id;
+      final currentUserId = _userModel?.id;
       if (currentUserId != null) {
         final stillInGame = updatedGame.players.any((p) => p.userId == currentUserId);
 
@@ -218,7 +218,7 @@ class _GameLobbyScreenState extends State<GameLobbyScreen> {
     });
 
     // Notify all connected clients about the player removal
-    _gameService.notifyPlayerRemoved(_game.id, updatedGame, userId);
+    _gameService?.notifyPlayerRemoved(_game.id, updatedGame, userId);
   }
 
   Future<void> _startGame() async {
@@ -236,8 +236,23 @@ class _GameLobbyScreenState extends State<GameLobbyScreen> {
       _isLoading = true;
     });
 
+    // Check if services are properly initialized
+    if (_gameService == null || _userModel?.authToken == null) {
+      setState(() {
+        _isLoading = false;
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Error: Service not initialized'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
     // Call API to start the game
-    final result = await _gameService.startGame(_game.id, _userModel.authToken!);
+    final result = await _gameService!.startGame(_game.id, _userModel!.authToken!);
 
     setState(() {
       _isLoading = false;
@@ -272,11 +287,11 @@ class _GameLobbyScreenState extends State<GameLobbyScreen> {
   @override
   void dispose() {
     // Only perform cleanup if not navigating to game screen
-    if (!_navigatingToGameScreen && _userModel.authToken != null) {
+    if (!_navigatingToGameScreen && _userModel?.authToken != null) {
       // Check if user is leaving voluntarily and is in the game
-      if (_userModel.id != null && _game.players.any((p) => p.userId == _userModel.id)) {
+      if (_userModel?.id != null && _game.players.any((p) => p.userId == _userModel?.id)) {
         // Create a copy of the game with current player removed
-        final updatedPlayers = _game.players.where((p) => p.userId != _userModel.id).toList();
+        final updatedPlayers = _game.players.where((p) => p.userId != _userModel?.id).toList();
         final updatedGame = GameModel(
           id: _game.id,
           name: _game.name,
@@ -290,11 +305,16 @@ class _GameLobbyScreenState extends State<GameLobbyScreen> {
         );
 
         // Notify others that player is leaving
-        _gameService.notifyPlayerQuitting(_game.id, updatedGame);
+        _gameService?.notifyPlayerQuitting(_game.id, updatedGame);
       }
 
       // Leave the game room
-      _gameService.leaveGameRoom(_game.id);
+      _gameService?.leaveGameRoom(_game.id);
+
+      // Clear game ID cache when leaving
+      if (!_navigatingToGameScreen) {
+        GameService.clearGameIdCache();
+      }
     }
 
     super.dispose();

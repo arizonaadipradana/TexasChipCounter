@@ -4,7 +4,7 @@ class PokerActionButton extends StatelessWidget {
   final String label;
   final IconData icon;
   final Color color;
-  final VoidCallback onPressed;
+  final VoidCallback? onPressed; // Changed to nullable VoidCallback
 
   const PokerActionButton({
     Key? key,
@@ -22,7 +22,7 @@ class PokerActionButton extends StatelessWidget {
         ElevatedButton(
           onPressed: onPressed,
           style: ElevatedButton.styleFrom(
-            backgroundColor: color,
+            backgroundColor: onPressed == null ? Colors.grey : color,
             foregroundColor: Colors.white,
             shape: const CircleBorder(),
             padding: const EdgeInsets.all(16),
@@ -32,8 +32,9 @@ class PokerActionButton extends StatelessWidget {
         const SizedBox(height: 4),
         Text(
           label,
-          style: const TextStyle(
+          style: TextStyle(
             fontWeight: FontWeight.bold,
+            color: onPressed == null ? Colors.grey : Colors.black,
           ),
         ),
       ],

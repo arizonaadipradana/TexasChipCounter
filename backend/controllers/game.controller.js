@@ -334,6 +334,18 @@ exports.gameAction = async (req, res) => {
       // Save game
       await game.save();
 
+      // Add real-time notification through WebSockets (if socket.io is set up)
+      const io = req.app.get('io');
+      if (io) {
+        io.to(gameId).emit('game_action_performed', {
+          gameId,
+          action,
+          amount: action === 'raise' ? amount : game.currentBet,
+          player: currentPlayer.username,
+          game
+        });
+      }
+
       return res.status(200).json({
         success: true,
         message: actionMessage,
