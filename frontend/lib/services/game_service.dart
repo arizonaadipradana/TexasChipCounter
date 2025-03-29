@@ -1,110 +1,131 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
-import 'package:socket_io_client/socket_io_client.dart' as io;
 
 import '../config/api_config.dart';
 import '../models/game_model.dart';
+import '../utils/socket_manager.dart'; // Import the socket manager
 import 'auth_service.dart';
 
 class GameService {
-  late io.Socket _socket;
-  String? _authToken;
+  // Use the singleton socket manager instead of creating a socket directly
+  final SocketManager _socketManager = SocketManager();
 
   // Map to store game ID lookups (short ID to full ID)
   static final Map<String, String> _gameIdMap = {};
 
-  // Initialize socket connection
-  void initSocket(String authToken) {
-    _authToken = authToken;
-
-    _socket = io.io(ApiConfig.baseUrl, <String, dynamic>{
-      'transports': ['websocket'],
-      'autoConnect': false,
-      'extraHeaders': {'Authorization': 'Bearer $_authToken'}
-    });
-
-    _socket.connect();
-
-    _socket.onConnect((_) {
-      print('Connected to the game server');
-
-      // Authenticate the socket connection
-      _socket.emit('authenticate', {'token': _authToken});
-    });
-
-    _socket.onDisconnect((_) {
-      print('Disconnected from the game server');
-    });
-
-    _socket.onError((error) {
-      print('Socket error: $error');
-    });
-
-    // Set up default listeners for common events
-    _socket.on('socket_joined', (data) {
-      print('New socket joined: ${data['socketId']}');
-    });
-
-    _socket.on('socket_left', (data) {
-      print('Socket left: ${data['socketId']}');
-    });
-  }
-
-  // Disconnect socket
-  void disconnectSocket() {
-    if (_socket.connected) {
-      _socket.disconnect();
-    }
+  // Initialize socket - now delegates to the socket manager
+  void initSocket(String authToken, {String? userId}) {
+    _socketManager.initSocket(authToken, userId: userId);
   }
 
   // Join a game room for real-time updates
   void joinGameRoom(String gameId) {
     print('Joining game room: $gameId');
-    _socket.emit('join_game', gameId);
+    _socketManager.joinGameRoom(gameId);
   }
 
   // Leave a game room
   void leaveGameRoom(String gameId) {
     print('Leaving game room: $gameId');
-    _socket.emit('leave_game', gameId);
+    _socketManager.leaveGameRoom(gameId);
   }
 
-  // Listen for game updates
+  // Disconnect socket (only used when logging out or exiting the app)
+  void disconnectSocket() {
+    // This is now handled by the socket manager
+    // We don't disconnect between screens anymore
+  }
+
+  // Listen for general game updates
   void listenForGameUpdates(Function(dynamic) onUpdate) {
-    _socket.on('game_update', (data) {
+    // Clear existing listeners to avoid duplicates
+    _socketManager.clearListeners('game_update');
+    _socketManager.clearListeners('game_action_performed');
+
+    _socketManager.on('game_update', (data) {
+      onUpdate(data);
+    });
+
+    _socketManager.on('game_action_performed', (data) {
       onUpdate(data);
     });
   }
 
   // Listen specifically for player join/leave events
-  void listenForPlayerUpdates(Function(GameModel) onPlayerUpdate) {
+  void listenForPlayerUpdates(Function(GameModel) onPlayerUpdate, [Function(String, String)? onKicked]) {
     print('Setting up player update listeners');
 
-    _socket.on('player_joined', (data) {
+    // Clear any existing listeners to avoid duplicates
+    _socketManager.clearListeners('player_joined');
+    _socketManager.clearListeners('player_left');
+    _socketManager.clearListeners('player_kicked');
+    _socketManager.clearListeners('game_started');
+    _socketManager.clearListeners('game_update');
+
+    // Listen for player join events
+    _socketManager.on('player_joined', (data) {
       print('player_joined event received: $data');
       try {
-        final updatedGame = GameModel.fromJson(data['game']);
-        onPlayerUpdate(updatedGame);
+        if (data != null && data['game'] != null) {
+          final updatedGame = GameModel.fromJson(data['game']);
+          onPlayerUpdate(updatedGame);
+        }
       } catch (e) {
         print('Error processing player_joined event: $e');
       }
     });
 
-    _socket.on('player_left', (data) {
+    // Listen for player leave events
+    _socketManager.on('player_left', (data) {
       print('player_left event received: $data');
       try {
-        final updatedGame = GameModel.fromJson(data['game']);
-        onPlayerUpdate(updatedGame);
+        if (data != null && data['game'] != null) {
+          final updatedGame = GameModel.fromJson(data['game']);
+          onPlayerUpdate(updatedGame);
+        }
       } catch (e) {
         print('Error processing player_left event: $e');
       }
     });
 
-    // Also listen for generic game updates as a fallback
-    _socket.on('game_update', (data) {
+    // Listen for player kick events
+    _socketManager.on('player_kicked', (data) {
+      print('player_kicked event received: $data');
+      try {
+        if (data != null && data['game'] != null) {
+          final updatedGame = GameModel.fromJson(data['game']);
+
+          // Update the game for all players
+          onPlayerUpdate(updatedGame);
+
+          // If current user was kicked, trigger the callback
+          if (onKicked != null && data['kickedUserId'] == _socketManager.userId) {
+            onKicked(updatedGame.id, data['removedBy'] ?? 'host');
+          }
+        }
+      } catch (e) {
+        print('Error processing player_kicked event: $e');
+      }
+    });
+
+    // Listen for game started events
+    _socketManager.on('game_started', (data) {
+      print('game_started event received: $data');
+      try {
+        if (data != null && data['game'] != null) {
+          final updatedGame = GameModel.fromJson(data['game']);
+          onPlayerUpdate(updatedGame);
+        }
+      } catch (e) {
+        print('Error processing game_started event: $e');
+      }
+    });
+
+    // Generic game update (fallback)
+    _socketManager.on('game_update', (data) {
       print('game_update event received: $data');
       try {
-        if (data['game'] != null) {
+        if (data != null && data['game'] != null) {
           final updatedGame = GameModel.fromJson(data['game']);
           onPlayerUpdate(updatedGame);
         }
@@ -128,7 +149,7 @@ class GameService {
   // Notify when a player joins
   void notifyPlayerJoined(String gameId, GameModel updatedGame) {
     print('Emitting player_joined event for game: $gameId');
-    _socket.emit('game_action', {
+    _socketManager.emit('game_action', {
       'gameId': gameId,
       'action': 'player_joined',
       'game': updatedGame.toJson(),
@@ -136,15 +157,35 @@ class GameService {
     });
   }
 
-  // Notify when a player is removed
-  void notifyPlayerRemoved(String gameId, GameModel updatedGame) {
+  // Notify when a player is removed (kicked by host)
+  void notifyPlayerRemoved(String gameId, GameModel updatedGame, String removedUserId) {
+    print('Emitting player_kicked event for game: $gameId');
+
+    _socketManager.emit('game_action', {
+      'gameId': gameId,
+      'action': 'player_kicked',
+      'kickedUserId': removedUserId,
+      'game': updatedGame.toJson(),
+      'timestamp': DateTime.now().toIso8601String(),
+      'removedBy': _socketManager.userId
+    });
+
+    print('Kick notification emitted for player: $removedUserId');
+  }
+
+  // Notify when a player is quitting voluntarily
+  void notifyPlayerQuitting(String gameId, GameModel updatedGame) {
     print('Emitting player_left event for game: $gameId');
-    _socket.emit('game_action', {
+
+    _socketManager.emit('game_action', {
       'gameId': gameId,
       'action': 'player_left',
+      'userId': _socketManager.userId,
       'game': updatedGame.toJson(),
       'timestamp': DateTime.now().toIso8601String()
     });
+
+    print('Player left notification emitted');
   }
 
   // Validate if a short game ID exists
@@ -294,6 +335,13 @@ class GameService {
       }
 
       final fullGameId = validation['gameId'];
+      if (fullGameId == null) {
+        return {
+          'success': false,
+          'message': 'Could not resolve full game ID',
+        };
+      }
+
       print('Full game ID for joining: $fullGameId');
 
       // First get the game details to check if player is already in the game
@@ -307,6 +355,10 @@ class GameService {
           final isPlayerInGame = game.players.any((player) => player.userId == userId);
           if (isPlayerInGame) {
             print('Player is already in this game, returning game object directly');
+
+            // Even if already joined, notify everyone to ensure state is synchronized
+            notifyPlayerJoined(fullGameId, game);
+
             return {
               'success': true,
               'game': game,
@@ -349,9 +401,13 @@ class GameService {
         // Get the game details again to get the latest state
         final latestGame = await getGame(fullGameId, authToken);
         if (latestGame['success']) {
+          // Notify everyone even on rejoin to refresh the player list
+          final game = latestGame['game'] as GameModel;
+          notifyPlayerJoined(fullGameId, game);
+
           return {
             'success': true,
-            'game': latestGame['game'],
+            'game': game,
             'alreadyJoined': true,
           };
         } else {
@@ -484,10 +540,11 @@ class GameService {
         final game = GameModel.fromJson(responseData['game']);
 
         // Notify all players that the game has started
-        _socket.emit('game_action', {
+        _socketManager.emit('game_action', {
           'gameId': gameId,
           'action': 'game_started',
           'game': game.toJson(),
+          'timestamp': DateTime.now().toIso8601String()
         });
 
         return {
@@ -528,10 +585,11 @@ class GameService {
         final game = GameModel.fromJson(responseData['game']);
 
         // Notify all players that the game has ended
-        _socket.emit('game_action', {
+        _socketManager.emit('game_action', {
           'gameId': gameId,
           'action': 'game_ended',
           'game': game.toJson(),
+          'timestamp': DateTime.now().toIso8601String()
         });
 
         return {
@@ -583,12 +641,13 @@ class GameService {
         final game = GameModel.fromJson(responseData['game']);
 
         // Notify all players about the action
-        _socket.emit('game_action', {
+        _socketManager.emit('game_action', {
           'gameId': gameId,
           'action': 'game_action_performed',
           'actionType': action,
           'amount': amount,
           'game': game.toJson(),
+          'timestamp': DateTime.now().toIso8601String()
         });
 
         return {
@@ -689,5 +748,4 @@ class GameService {
       };
     }
   }
-
 }

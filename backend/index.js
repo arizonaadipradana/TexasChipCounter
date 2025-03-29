@@ -7,6 +7,7 @@ console.log('MONGODB_URI:', process.env.MONGODB_URI);
 console.log('PORT:', process.env.PORT);
 console.log('NODE_ENV:', process.env.NODE_ENV);
 
+const jwt = require('jsonwebtoken');
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -66,10 +67,11 @@ app.use('/api/transactions', transactionRoutes);
 io.on('connection', (socket) => {
   console.log('New client connected:', socket.id);
 
-  // Store user info when available
+  // Store user info and game rooms
   let currentUser = null;
+  const joinedRooms = new Set();
 
-  // Authenticate socket connection with token (optional enhancement)
+  // Authenticate socket connection with token
   socket.on('authenticate', (data) => {
     try {
       const token = data.token;
@@ -88,10 +90,10 @@ io.on('connection', (socket) => {
   // Handle joining a game room
   socket.on('join_game', (gameId) => {
     socket.join(gameId);
+    joinedRooms.add(gameId);
     console.log(`Socket ${socket.id} joined game: ${gameId}`);
 
     // Emit an event to all sockets in the room that a new socket joined
-    // This is just to notify, not to update the game state
     socket.to(gameId).emit('socket_joined', {
       socketId: socket.id,
       timestamp: new Date()
@@ -101,6 +103,7 @@ io.on('connection', (socket) => {
   // Handle leaving a game room
   socket.on('leave_game', (gameId) => {
     socket.leave(gameId);
+    joinedRooms.delete(gameId);
     console.log(`Socket ${socket.id} left game: ${gameId}`);
 
     // Emit an event to all sockets in the room that a socket left
@@ -110,34 +113,61 @@ io.on('connection', (socket) => {
     });
   });
 
-  // Handle game actions
+  // Handle game actions with improved logging and broadcasting
   socket.on('game_action', (data) => {
-    console.log(`Game action in ${data.gameId}:`, data.action);
+    // Add better timestamps and details to all logs
+    const timestamp = new Date().toISOString();
+    console.log(`[${timestamp}] Game action in ${data.gameId}: ${data.action}`);
 
-    // Enhanced logging
+    // Enhanced action-specific logging
     if (data.action === 'player_joined') {
       console.log(`Player joined game ${data.gameId}`);
-      // Add the player's username to the event if available
       if (data.game && data.game.players) {
         const newPlayer = data.game.players[data.game.players.length - 1];
-        data.playerName = newPlayer.username;
+        console.log(`New player: ${newPlayer.username}`);
       }
     } else if (data.action === 'player_left') {
       console.log(`Player left game ${data.gameId}`);
+      if (data.userId) {
+        console.log(`User ID that left: ${data.userId}`);
+      }
+    } else if (data.action === 'player_kicked') {
+      console.log(`Player kicked from game ${data.gameId}`);
+      if (data.kickedUserId) {
+        console.log(`Kicked user ID: ${data.kickedUserId}`);
+      }
+    } else if (data.action === 'game_started') {
+      console.log(`Game ${data.gameId} started`);
     }
 
-    // Broadcast the action to all players in the game room
-    // Including the original sender to ensure they have the latest state
+    // Always add a timestamp if not present
+    if (!data.timestamp) {
+      data.timestamp = timestamp;
+    }
+
+    // Use io.to() to broadcast to ALL clients in the room including sender
+    // This ensures everyone has the same state
     io.to(data.gameId).emit(data.action, data);
 
-    // Also emit a generic game_update event for any listeners
+    // Also emit general game_update event as a fallback
     io.to(data.gameId).emit('game_update', data);
+
+    // Log confirmation of broadcast
+    console.log(`[${timestamp}] Broadcasted ${data.action} to all clients in game ${data.gameId}`);
   });
 
-  // Handle disconnection
+  // Handle disconnection with cleanup
   socket.on('disconnect', () => {
     console.log('Client disconnected:', socket.id);
-    // Additional cleanup can be done here if needed
+
+    // Notify all rooms this socket was in
+    joinedRooms.forEach(gameId => {
+      socket.to(gameId).emit('socket_left', {
+        socketId: socket.id,
+        userId: currentUser?.userId,
+        timestamp: new Date()
+      });
+    });
   });
 });
 

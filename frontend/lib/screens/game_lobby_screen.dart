@@ -25,6 +25,9 @@ class _GameLobbyScreenState extends State<GameLobbyScreen> {
   late GameService _gameService;
   late UserModel _userModel;
 
+  // Add a flag to track if navigating to game screen to avoid unnecessary cleanup
+  bool _navigatingToGameScreen = false;
+
   @override
   void initState() {
     super.initState();
@@ -54,57 +57,119 @@ class _GameLobbyScreenState extends State<GameLobbyScreen> {
     }
 
     _gameService = GameService();
-    _gameService.initSocket(_userModel.authToken!);
+    _gameService.initSocket(_userModel.authToken!, userId: _userModel.id);
 
     // Join the game room for real-time updates
     _gameService.joinGameRoom(_game.id);
 
     // Listen for player join/leave events with an enhanced callback
-    _gameService.listenForPlayerUpdates(_handlePlayerUpdate);
+    _gameService.listenForPlayerUpdates(_handlePlayerUpdate, _handlePlayerKicked);
+  }
+
+  void _handlePlayerKicked(String gameId, String kickedBy) {
+    // This is called when the current user is kicked
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('You have been removed from the game'),
+          backgroundColor: Colors.red,
+        ),
+      );
+
+      // Navigate back to previous screen
+      Navigator.of(context).pop();
+    }
   }
 
   void _handlePlayerUpdate(GameModel updatedGame) {
     if (mounted) {
+      // Log the update for debugging
+      print('Received game update: ${updatedGame.players.length} players');
+      print('Game status: ${updatedGame.status}');
+
+      // Check if game status changed to active
+      if (updatedGame.status == GameStatus.active && _game.status != GameStatus.active) {
+        print('Game started, navigating to active game screen');
+
+        // Set flag to prevent unnecessary cleanup in dispose
+        _navigatingToGameScreen = true;
+
+        // Navigate to the active game screen
+        Navigator.of(context).pushReplacement(
+          MaterialPageRoute(
+            builder: (context) => ActiveGameScreen(game: updatedGame),
+          ),
+        );
+        return;
+      }
+
+      // Check if current player is still in the game
+      final currentUserId = _userModel.id;
+      if (currentUserId != null) {
+        final stillInGame = updatedGame.players.any((p) => p.userId == currentUserId);
+
+        if (!stillInGame) {
+          print('Current player no longer in game, returning to home');
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('You are no longer in this game'),
+              backgroundColor: Colors.red,
+            ),
+          );
+          Navigator.of(context).pop();
+          return;
+        }
+      }
+
+      // Calculate what changed for notifications
+      final oldPlayerIds = _game.players.map((p) => p.userId).toSet();
+      final newPlayerIds = updatedGame.players.map((p) => p.userId).toSet();
+
+      // Players who joined
+      final addedPlayers = newPlayerIds.difference(oldPlayerIds);
+
+      // Players who left
+      final removedPlayers = oldPlayerIds.difference(newPlayerIds);
+
+      // Update the local game state
       setState(() {
         _game = updatedGame;
       });
 
-      // Calculate what changed
-      final oldPlayers = _game.players.map((p) => p.userId).toSet();
-      final newPlayers = updatedGame.players.map((p) => p.userId).toSet();
-
-      // New players
-      final addedPlayers = newPlayers.difference(oldPlayers);
-      // Players who left
-      final removedPlayers = oldPlayers.difference(newPlayers);
-
+      // Show notifications for player changes
       if (addedPlayers.isNotEmpty) {
-        // Find the name of the player who joined
-        final joinedPlayer = updatedGame.players.firstWhere(
-              (p) => addedPlayers.contains(p.userId),
-          orElse: () => Player(userId: '', username: 'Someone', chipBalance: 0),
-        );
+        // Find names of players who joined
+        for (final playerId in addedPlayers) {
+          final player = updatedGame.players.firstWhere(
+                (p) => p.userId == playerId,
+            orElse: () => Player(userId: playerId, username: 'Unknown Player', chipBalance: 0),
+          );
 
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('${joinedPlayer.username} joined the game'),
-            duration: const Duration(seconds: 2),
-          ),
-        );
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('${player.username} joined the game'),
+              duration: const Duration(seconds: 2),
+            ),
+          );
+        }
       }
 
       if (removedPlayers.isNotEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('A player left the game'),
-            duration: Duration(seconds: 2),
-          ),
-        );
-      }
+        // Try to find names of removed players from old players list
+        for (final playerId in removedPlayers) {
+          final oldPlayers = widget.game.players;
+          final player = oldPlayers.firstWhere(
+                (p) => p.userId == playerId,
+            orElse: () => Player(userId: playerId, username: 'A player', chipBalance: 0),
+          );
 
-      // If none of the above, it's a general update
-      if (addedPlayers.isEmpty && removedPlayers.isEmpty && oldPlayers.isNotEmpty) {
-        print('General game update received');
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('${player.username} left the game'),
+              duration: const Duration(seconds: 2),
+            ),
+          );
+        }
       }
     }
   }
@@ -120,23 +185,40 @@ class _GameLobbyScreenState extends State<GameLobbyScreen> {
     });
   }
 
-  void _handleApiError(dynamic result) {
-    if (result is Map<String, dynamic> &&
-        result['tokenExpired'] == true) {
-      // Token expired, redirect to login
+  void _removePlayer(String userId) async {
+    final userModel = Provider.of<UserModel>(context, listen: false);
+    final isHost = userModel.id == _game.hostId;
+
+    if (!isHost) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Your session has expired. Please log in again.'),
+          content: Text('Only the host can remove players'),
           backgroundColor: Colors.red,
         ),
       );
-
-      // Navigate to login screen
-      Navigator.of(context).pushAndRemoveUntil(
-        MaterialPageRoute(builder: (context) => const LoginScreen()),
-            (route) => false,
-      );
+      return;
     }
+
+    // Create a copy of the game with player removed
+    final updatedGame = GameModel(
+      id: _game.id,
+      name: _game.name,
+      hostId: _game.hostId,
+      players: _game.players.where((p) => p.userId != userId).toList(),
+      smallBlind: _game.smallBlind,
+      bigBlind: _game.bigBlind,
+      createdAt: _game.createdAt,
+      status: _game.status,
+      currentPlayerIndex: _game.currentPlayerIndex,
+    );
+
+    // Update local state first for responsive UI
+    setState(() {
+      _game = updatedGame;
+    });
+
+    // Notify all connected clients about the player removal
+    _gameService.notifyPlayerRemoved(_game.id, updatedGame, userId);
   }
 
   Future<void> _startGame() async {
@@ -164,6 +246,9 @@ class _GameLobbyScreenState extends State<GameLobbyScreen> {
     if (result['success']) {
       final updatedGame = result['game'] as GameModel;
 
+      // Set flag to avoid unnecessary cleanup
+      _navigatingToGameScreen = true;
+
       // Navigate to active game screen
       if (mounted) {
         Navigator.of(context).pushReplacement(
@@ -173,32 +258,45 @@ class _GameLobbyScreenState extends State<GameLobbyScreen> {
         );
       }
     } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(result['message']),
-          backgroundColor: Colors.red,
-        ),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(result['message']),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
     }
-  }
-
-  void _removePlayer(String userId) async {
-    // Remove the player from the local model
-    setState(() {
-      _game.removePlayer(userId);
-    });
-
-    // Notify all connected players about the removal
-    _gameService.notifyPlayerRemoved(_game.id, _game);
   }
 
   @override
   void dispose() {
-    // Leave the game room and disconnect socket when leaving the screen
-    if (_userModel.authToken != null) {
+    // Only perform cleanup if not navigating to game screen
+    if (!_navigatingToGameScreen && _userModel.authToken != null) {
+      // Check if user is leaving voluntarily and is in the game
+      if (_userModel.id != null && _game.players.any((p) => p.userId == _userModel.id)) {
+        // Create a copy of the game with current player removed
+        final updatedPlayers = _game.players.where((p) => p.userId != _userModel.id).toList();
+        final updatedGame = GameModel(
+          id: _game.id,
+          name: _game.name,
+          hostId: _game.hostId,
+          players: updatedPlayers,
+          smallBlind: _game.smallBlind,
+          bigBlind: _game.bigBlind,
+          createdAt: _game.createdAt,
+          status: _game.status,
+          currentPlayerIndex: _game.currentPlayerIndex,
+        );
+
+        // Notify others that player is leaving
+        _gameService.notifyPlayerQuitting(_game.id, updatedGame);
+      }
+
+      // Leave the game room
       _gameService.leaveGameRoom(_game.id);
-      _gameService.disconnectSocket();
     }
+
     super.dispose();
   }
 

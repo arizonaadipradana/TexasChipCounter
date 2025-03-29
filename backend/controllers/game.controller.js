@@ -554,3 +554,57 @@ exports.validateGameId = async (req, res) => {
     });
   }
 };
+
+exports.removePlayer = async (req, res) => {
+  try {
+    const { gameId, userId } = req.params;
+    const hostId = req.userId;
+
+    // Find game
+    const game = await Game.findById(gameId);
+    if (!game) {
+      return res.status(404).json({
+        success: false,
+        message: 'Game not found'
+      });
+    }
+
+    // Check if user is the host
+    if (game.hostId.toString() !== hostId.toString()) {
+      return res.status(403).json({
+        success: false,
+        message: 'Only the host can remove players'
+      });
+    }
+
+    // Check if player exists in the game
+    const playerExists = game.players.some(
+      player => player.userId.toString() === userId.toString()
+    );
+
+    if (!playerExists) {
+      return res.status(404).json({
+        success: false,
+        message: 'Player not found in the game'
+      });
+    }
+
+    // Remove player
+    game.removePlayer(userId);
+    await game.save();
+
+    // Return updated game
+    return res.status(200).json({
+      success: true,
+      message: 'Player removed successfully',
+      game
+    });
+  } catch (error) {
+    console.error('Remove player error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to remove player',
+      error: error.message
+    });
+  }
+};

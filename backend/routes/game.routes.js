@@ -37,4 +37,6 @@ router.put('/:gameId/end', gameController.endGame);
 // Game action (check, call, raise, fold)
 router.post('/:gameId/action', gameController.gameAction);
 
+router.delete('/:gameId/players/:userId', gameController.removePlayer);
+
 module.exports = router;
