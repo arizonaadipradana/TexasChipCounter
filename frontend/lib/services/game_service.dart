@@ -71,7 +71,6 @@ class GameService {
     });
   }
 
-  // Listen for all game-related real-time updates
   // Listen for all game-related real-time updates with a single handler
 // This consolidates all event handlers to prevent socket disconnection issues
   void listenForAllGameUpdates(Function(dynamic) onUpdate) {
@@ -85,6 +84,16 @@ class GameService {
       final eventName = data['action'] ?? 'game_update';
       print('Received $eventName event: ${data.toString().substring(0, Math.min(100, data.toString().length))}...');
 
+      // Ensure the data includes proper action type for better handling
+      if (!data.containsKey('action')) {
+        data['action'] = eventName;
+      }
+
+      // Add timestamp if missing
+      if (!data.containsKey('timestamp')) {
+        data['timestamp'] = DateTime.now().toIso8601String();
+      }
+
       // Pass to callback
       onUpdate(data);
     }
@@ -97,6 +106,16 @@ class GameService {
     _socketManager.on('player_kicked', gameEventHandler);
     _socketManager.on('game_started', gameEventHandler);
     _socketManager.on('game_ended', gameEventHandler);
+    _socketManager.on('turn_changed', gameEventHandler); // Add specific listener for turn changes
+
+    // Adding additional listener for any socket events that might contain game data
+    _socketManager.on('connect', (_) {
+      print('Socket connected - checking for any missed game updates');
+    });
+
+    _socketManager.on('reconnect', (_) {
+      print('Socket reconnected - checking for any missed game updates');
+    });
 
     print('Consolidated game event listeners set up');
   }
@@ -112,7 +131,8 @@ class GameService {
       'player_left',
       'player_kicked',
       'game_started',
-      'game_ended'
+      'game_ended',
+      'turn_changed', // Also clear turn change listeners
     ];
 
     for (final event in gameEvents) {
@@ -559,6 +579,8 @@ class GameService {
       String authToken,
       ) async {
     try {
+      print('Fetching game details for ID: $gameId');
+
       // Check if it's a short ID needing conversion
       String fullGameId = gameId;
       if (gameId.length == 6) {
@@ -580,20 +602,34 @@ class GameService {
         },
       );
 
-      final responseData = jsonDecode(response.body);
+      print('Game details response status: ${response.statusCode}');
 
       if (response.statusCode == 200) {
+        final responseData = jsonDecode(response.body);
+        final game = GameModel.fromJson(responseData['game']);
+
+        print('Successfully fetched game details. Current player index: ${game.currentPlayerIndex}');
+
         return {
           'success': true,
-          'game': GameModel.fromJson(responseData['game']),
+          'game': game,
         };
       } else {
+        var message = 'Failed to get game details';
+        try {
+          final responseData = jsonDecode(response.body);
+          message = responseData['message'] ?? message;
+        } catch (e) {
+          // If the response isn't valid JSON, just use the default message
+        }
+
         return {
           'success': false,
-          'message': responseData['message'] ?? 'Failed to get game details',
+          'message': message,
         };
       }
     } catch (e) {
+      print('Error fetching game details: $e');
       return {
         'success': false,
         'message': 'Network error: ${e.toString()}',
@@ -692,7 +728,6 @@ class GameService {
   }
 
   // Game action (check, call, raise, fold)
-  // Game action (check, call, raise, fold)
   Future<Map<String, dynamic>> gameAction(
       String gameId,
       String action,
@@ -717,6 +752,8 @@ class GameService {
         body['amount'] = amount;
       }
 
+      print('Sending game action: $action to server for game: $gameId');
+
       final response = await http.post(
         Uri.parse('${ApiConfig.baseUrl}${ApiConfig.gamesEndpoint}/$gameId/action'),
         headers: {
@@ -726,13 +763,24 @@ class GameService {
         body: jsonEncode(body),
       );
 
+      print('Game action response status: ${response.statusCode}');
+      print('Game action response body: ${response.body.substring(0, Math.min(200, response.body.length))}');
+
       final responseData = jsonDecode(response.body);
 
       if (response.statusCode == 200) {
         final game = GameModel.fromJson(responseData['game']);
 
-        // We no longer need to manually emit events - the server does this now
-        // Just return the result
+        // Manually emit a turn change event to ensure all clients update
+        // This helps in case the server-side event doesn't reach all clients
+        _socketManager.emit('game_action', {
+          'gameId': gameId,
+          'action': 'turn_changed',
+          'game': game.toJson(),
+          'actionType': action,
+          'amount': amount,
+          'timestamp': DateTime.now().toIso8601String()
+        });
 
         return {
           'success': true,

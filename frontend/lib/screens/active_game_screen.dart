@@ -1,3 +1,5 @@
+import 'dart:math' as Math;
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -25,6 +27,7 @@ class _ActiveGameScreenState extends State<ActiveGameScreen> {
   final TextEditingController _raiseController = TextEditingController();
   bool _exiting = false;
   bool _isProcessingAction = false;
+  bool _refreshingState = false;
 
   @override
   void initState() {
@@ -61,15 +64,75 @@ class _ActiveGameScreenState extends State<ActiveGameScreen> {
     // IMPORTANT: Listen for all updates BEFORE setting up specific handlers
     // to avoid socket disconnect issues
     _gameService?.listenForAllGameUpdates(_handleAnyGameEvent);
+
+    // Set up periodic state refresh to ensure consistency
+    // This acts as a fallback in case any real-time events are missed
+    _setupPeriodicRefresh();
+
+    // Initial refresh to get the latest state
+    _refreshGameState();
+  }
+
+  // Set up periodic refresh as a backup for real-time updates
+  void _setupPeriodicRefresh() {
+    // Refresh game state every 5 seconds as a backup
+    Future.delayed(Duration(seconds: 5), () {
+      if (mounted && !_exiting) {
+        _refreshGameState(silent: true);
+        _setupPeriodicRefresh(); // Schedule next refresh
+      }
+    });
+  }
+
+  // Method to fetch the latest game state from the server
+  // Added silent parameter to avoid showing loading indicators during background refresh
+  Future<void> _refreshGameState({bool silent = false}) async {
+    if (_gameService == null || _userModel?.authToken == null || _refreshingState) {
+      return;
+    }
+
+    if (!silent) {
+      setState(() {
+        _refreshingState = true;
+      });
+    }
+
+    try {
+      final result = await _gameService!.getGame(_game.id, _userModel!.authToken!);
+
+      if (result['success']) {
+        final updatedGame = result['game'] as GameModel;
+        setState(() {
+          _game = updatedGame;
+          _currentPot = updatedGame.pot ?? _currentPot;
+          _currentBet = updatedGame.currentBet ?? _currentBet;
+          if (!silent) _refreshingState = false;
+        });
+      }
+    } catch (e) {
+      print('Error refreshing game state: $e');
+    } finally {
+      if (mounted && !silent) {
+        setState(() {
+          _refreshingState = false;
+        });
+      }
+    }
   }
 
   void _handleAnyGameEvent(dynamic data) {
     if (!mounted) return;
 
     try {
+      print('Received game event: ${data.toString().substring(0, Math.min(100, data.toString().length))}...');
+      print('Event type: ${data['action'] ?? 'unknown'}');
+
       // Check if this is game data we can use
       if (data != null && data['game'] != null) {
         final updatedGame = GameModel.fromJson(data['game']);
+
+        // Log changes for debugging
+        print('Current player index: ${_game.currentPlayerIndex} -> ${updatedGame.currentPlayerIndex}');
 
         // Update pot amount and bet if available
         int newPot = updatedGame.pot ?? _currentPot;
@@ -142,6 +205,22 @@ class _ActiveGameScreenState extends State<ActiveGameScreen> {
           _currentBet = newBet;
         });
 
+        // For turn changed events, play a sound or add a visual indicator
+        if (data['action'] == 'turn_changed' ||
+            (data['action'] == 'game_action_performed' && _game.currentPlayerIndex != updatedGame.currentPlayerIndex)) {
+          // Get current player name
+          final currentPlayerName = updatedGame.currentPlayer.username;
+
+          // Show a subtle notification for turn change
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('It\'s $currentPlayerName\'s turn now'),
+              duration: const Duration(seconds: 1),
+              backgroundColor: Colors.blue.shade700,
+            ),
+          );
+        }
+
         // Display action info if available
         if (data['action'] == 'game_action_performed' && data['actionType'] != null) {
           String actionMessage = '';
@@ -149,9 +228,9 @@ class _ActiveGameScreenState extends State<ActiveGameScreen> {
           // Find the player who performed the action
           if (data['actionType'] != null) {
             if (updatedGame.players.isNotEmpty) {
-              // Get the previous player who just acted
-              int previousPlayerIndex = (updatedGame.currentPlayerIndex - 1);
-              if (previousPlayerIndex < 0) previousPlayerIndex = updatedGame.players.length - 1;
+              // Get the previous player who just acted (use data from event if available)
+              int previousPlayerIndex = data['previousPlayerIndex'] ??
+                  ((updatedGame.currentPlayerIndex - 1 + updatedGame.players.length) % updatedGame.players.length);
 
               if (previousPlayerIndex >= 0 && previousPlayerIndex < updatedGame.players.length) {
                 final actor = updatedGame.players[previousPlayerIndex];
@@ -174,6 +253,8 @@ class _ActiveGameScreenState extends State<ActiveGameScreen> {
       }
     } catch (e) {
       print('Error handling game event: $e');
+      // If we encounter an error processing the event, refresh state from server
+      _refreshGameState(silent: true);
     }
   }
 
@@ -238,6 +319,7 @@ class _ActiveGameScreenState extends State<ActiveGameScreen> {
       // Log the update for debugging
       print('Received game update in active game: ${updatedGame.players.length} players');
       print('Game status: ${updatedGame.status}');
+      print('Current player index: ${updatedGame.currentPlayerIndex}');
 
       // Update pot value
       final newPot = updatedGame.pot ?? _currentPot;
@@ -420,6 +502,9 @@ class _ActiveGameScreenState extends State<ActiveGameScreen> {
     if (result['success']) {
       // The game will be updated via socket events
       _showActionSnackBar('Check');
+
+      // No need to manually refresh as the real-time events should handle it
+      // In case of any sync issues, our periodic refresh will catch it
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -474,6 +559,8 @@ class _ActiveGameScreenState extends State<ActiveGameScreen> {
       if (_userModel != null) {
         _userModel!.subtractChips(_currentBet);
       }
+
+      // No need to manually refresh as real-time events will update the UI
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -512,6 +599,8 @@ class _ActiveGameScreenState extends State<ActiveGameScreen> {
 
     if (result['success']) {
       _showActionSnackBar('Fold');
+
+      // No need to manually refresh as real-time events will update the UI
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -612,6 +701,11 @@ class _ActiveGameScreenState extends State<ActiveGameScreen> {
                 if (_userModel != null) {
                   _userModel!.subtractChips(raiseAmount);
                 }
+
+                // Force refresh game state after a short delay
+                Future.delayed(Duration(milliseconds: 500), () {
+                  _refreshGameState();
+                });
               } else {
                 ScaffoldMessenger.of(context).showSnackBar(
                   SnackBar(
@@ -688,16 +782,51 @@ class _ActiveGameScreenState extends State<ActiveGameScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text(
-                    'Players',
-                    style: TextStyle(
-                      fontSize: 20,
-                      fontWeight: FontWeight.bold,
-                    ),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text(
+                        'Players',
+                        style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      // Show current turn indicator
+                      if (_game.players.isNotEmpty)
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                          decoration: BoxDecoration(
+                              color: Colors.blue.shade50,
+                              borderRadius: BorderRadius.circular(16),
+                              border: Border.all(color: Colors.blue.shade200)
+                          ),
+                          child: Text(
+                            'Current Turn: ${_game.currentPlayer.username}',
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              color: Colors.blue.shade800,
+                            ),
+                          ),
+                        ),
+                    ],
                   ),
                   const SizedBox(height: 8),
+
+                  // Player List
                   Expanded(
-                    child: ListView.builder(
+                    child: _game.players.isEmpty
+                        ? const Center(
+                      child: Text(
+                        'Waiting for players to join...',
+                        style: TextStyle(
+                          fontStyle: FontStyle.italic,
+                          fontSize: 16,
+                          color: Colors.grey,
+                        ),
+                      ),
+                    )
+                        : ListView.builder(
                       itemCount: _game.players.length,
                       itemBuilder: (context, index) {
                         final player = _game.players[index];
@@ -715,9 +844,32 @@ class _ActiveGameScreenState extends State<ActiveGameScreen> {
                                 style: const TextStyle(color: Colors.white),
                               ),
                             ),
-                            title: Text(
-                              '${player.username} ${isCurrentUser ? '(You)' : ''}',
-                              style: const TextStyle(fontWeight: FontWeight.bold),
+                            title: Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    '${player.username} ${isCurrentUser ? '(You)' : ''}',
+                                    style: const TextStyle(fontWeight: FontWeight.bold),
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                                if (player.userId == _game.hostId)
+                                  Container(
+                                    margin: const EdgeInsets.only(left: 4),
+                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                    decoration: BoxDecoration(
+                                      color: Colors.amber.shade100,
+                                      borderRadius: BorderRadius.circular(4),
+                                    ),
+                                    child: Text(
+                                      'Host',
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        color: Colors.amber.shade800,
+                                      ),
+                                    ),
+                                  ),
+                              ],
                             ),
                             subtitle: Text('${player.chipBalance} chips'),
                             trailing: isCurrentTurn

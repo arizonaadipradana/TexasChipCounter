@@ -21,6 +21,9 @@ class SocketManager {
   // Track rooms the socket has joined
   final Set<String> _joinedRooms = {};
 
+  // Pending events to emit after reconnection
+  final List<Map<String, dynamic>> _pendingEvents = [];
+
   /// Initialize the socket connection if not already connected
   void initSocket(String authToken, {String? userId}) {
     // Only initialize once if already connected with the same auth token
@@ -40,10 +43,12 @@ class SocketManager {
       _socket = null;
     }
 
-    // Create new socket
+    print('Creating new socket connection to: ${ApiConfig.baseUrl}');
+
+    // Create new socket with better options for stability
     _socket = io.io(ApiConfig.baseUrl, <String, dynamic>{
       'transports': ['websocket'],
-      'autoConnect': false,
+      'autoConnect': true,
       'extraHeaders': {'Authorization': 'Bearer $_authToken'},
       'forceNew': false,
       'reconnection': true,
@@ -51,6 +56,8 @@ class SocketManager {
       'reconnectionDelay': 1000,
       'reconnectionDelayMax': 5000,
       'timeout': 20000,
+      'pingTimeout': 30000,
+      'pingInterval': 10000,
     });
 
     // Connect and set up event handlers
@@ -68,6 +75,9 @@ class SocketManager {
         print('Rejoining room: $roomId');
         _socket!.emit('join_game', roomId);
       }
+
+      // Send any pending events
+      _processPendingEvents();
     });
 
     _socket!.onDisconnect((_) {
@@ -103,7 +113,29 @@ class SocketManager {
         print('Rejoining room after reconnect: $roomId');
         _socket!.emit('join_game', roomId);
       }
+
+      // Send any pending events
+      _processPendingEvents();
     });
+  }
+
+  // Process any pending events that were queued during disconnection
+  void _processPendingEvents() {
+    if (_pendingEvents.isEmpty) return;
+
+    print('Processing ${_pendingEvents.length} pending events');
+
+    // Clone the list to avoid modification during iteration
+    final events = List<Map<String, dynamic>>.from(_pendingEvents);
+    _pendingEvents.clear();
+
+    for (final eventData in events) {
+      final eventName = eventData['event'];
+      final data = eventData['data'];
+
+      print('Emitting pending event: $eventName');
+      _socket!.emit(eventName, data);
+    }
   }
 
   /// Join a game room and track it
@@ -157,23 +189,33 @@ class SocketManager {
     _joinedRooms.remove(gameId);
   }
 
-  /// Emit an event to the server
+  /// Emit an event to the server with improved reliability
   void emit(String event, dynamic data) {
     if (_socket == null) {
-      print('Socket is null, cannot emit event: $event');
+      print('Socket is null, queuing event for later: $event');
+      _pendingEvents.add({
+        'event': event,
+        'data': data,
+      });
       return;
     }
 
     if (!_isConnected) {
-      print('Socket not connected, cannot emit event: $event');
+      print('Socket not connected, queuing event: $event');
+      _pendingEvents.add({
+        'event': event,
+        'data': data,
+      });
 
       // Queue the emit for after connection (basic retry)
       Future.delayed(Duration(milliseconds: 500), () {
         if (_socket != null && _isConnected) {
           print('Socket connected, emitting delayed event: $event');
           _socket!.emit(event, data);
-        } else {
-          print('Socket still not connected, could not emit event: $event');
+
+          // Remove from pending list if it's still there
+          _pendingEvents.removeWhere((e) =>
+          e['event'] == event && e['data'] == data);
         }
       });
 
@@ -270,6 +312,7 @@ class SocketManager {
       _isConnected = false;
       _eventListeners.clear();
       _joinedRooms.clear();
+      _pendingEvents.clear();
       print('Socket manager disconnected and reset');
     }
   }
@@ -287,4 +330,7 @@ class SocketManager {
 
   /// User ID for the current connection
   String? get userId => _userId;
+
+  /// Get the socket ID if connected
+  String? get socketId => _isConnected ? _socket?.id : null;
 }

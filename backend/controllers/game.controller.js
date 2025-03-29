@@ -329,27 +329,46 @@ exports.gameAction = async (req, res) => {
 
     if (actionResult) {
       // Move to next player's turn
+      const oldPlayerIndex = game.currentPlayerIndex;
       game.nextTurn();
+
+      // Log the player turn change
+      console.log(`Game ${gameId}: Player turn changed from index ${oldPlayerIndex} to ${game.currentPlayerIndex}`);
 
       // Save game
       await game.save();
 
-      // Add real-time notification through WebSockets (if socket.io is set up)
+      // Get io instance from request
       const io = req.app.get('io');
       if (io) {
+        // Emit detailed action information
         io.to(gameId).emit('game_action_performed', {
           gameId,
-          action,
+          action: 'game_action_performed',
+          actionType: action,
           amount: action === 'raise' ? amount : game.currentBet,
           player: currentPlayer.username,
-          game
+          previousPlayerIndex: oldPlayerIndex,
+          currentPlayerIndex: game.currentPlayerIndex,
+          game: game.toObject(),
+          timestamp: new Date().toISOString()
+        });
+
+        // Also emit a specific turn_changed event to update UI immediately
+        io.to(gameId).emit('turn_changed', {
+          gameId,
+          action: 'turn_changed',
+          previousPlayerIndex: oldPlayerIndex,
+          currentPlayerIndex: game.currentPlayerIndex,
+          game: game.toObject(),
+          timestamp: new Date().toISOString()
         });
       }
 
       return res.status(200).json({
         success: true,
         message: actionMessage,
-        game
+        game: game.toObject()
       });
     } else {
       return res.status(400).json({

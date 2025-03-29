@@ -185,7 +185,7 @@ exports.topUp = async (req, res) => {
     // Create transaction record with improved description
     await Transaction.createTopUp(
       user._id,
-      chipAmount, 
+      chipAmount,
       `Top-up - @${user.username}`
     );
 
