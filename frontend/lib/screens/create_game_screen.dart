@@ -135,7 +135,7 @@ class _CreateGameScreenState extends State<CreateGameScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Create Game'),
+        title: const Text('Buat lobby'),
       ),
       body: Padding(
         padding: const EdgeInsets.all(16.0),

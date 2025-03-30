@@ -186,7 +186,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Poker Chip Counter'),
+        title: const Text('Nyanguni Kancane'),
         actions: [
           IconButton(
             icon: const Icon(Icons.logout),
@@ -238,7 +238,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 children: [
                   _buildMenuCard(
                     context,
-                    'Create Game',
+                    'Buat Lobby LG',
                     Icons.add_circle,
                     Colors.green,
                         () {
@@ -251,7 +251,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                   _buildMenuCard(
                     context,
-                    'Join Game',
+                    'Join Lobby',
                     Icons.group_add,
                     Colors.blue,
                         () {
@@ -273,7 +273,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                   _buildMenuCard(
                     context,
-                    'Transaction History',
+                    'Riwayat Transaksi',
                     Icons.history,
                     Colors.purple,
                         () {
@@ -286,7 +286,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                   _buildMenuCard(
                     context,
-                    'Profile',
+                    'Profil',
                     Icons.person,
                     Colors.teal,
                         () {

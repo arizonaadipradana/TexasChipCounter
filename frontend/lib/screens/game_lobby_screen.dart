@@ -262,7 +262,7 @@ class _GameLobbyScreenState extends State<GameLobbyScreen> {
     if (_game.players.length < 2) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('You need at least 2 players to start a game'),
+          content: Text('You need at least 2 players to start a Texas Hold\'em game'),
           backgroundColor: Colors.red,
         ),
       );
@@ -291,16 +291,10 @@ class _GameLobbyScreenState extends State<GameLobbyScreen> {
     // Provide immediate feedback that game is starting
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
-        content: Text('Starting game...'),
+        content: Text('Starting Texas Hold\'em game...'),
         duration: Duration(seconds: 1),
       ),
     );
-
-    // Optimistically update the game status to give immediate feedback
-    setState(() {
-      // This is a temporary UI update before the server responds
-      _game.status = GameStatus.active;
-    });
 
     // Call API to start the game
     final result = await _gameService!.startGame(_game.id, _userModel!.authToken!);
@@ -319,18 +313,13 @@ class _GameLobbyScreenState extends State<GameLobbyScreen> {
       _navigatingToGameScreen = true;
       _lastUpdateWasGameStart = true;
 
-      // Navigate to active game screen
+      // Navigate to active game screen (which will now use the poker game)
       if (mounted) {
-        // Add a slight delay to allow socket events to propagate
-        Future.delayed(Duration(milliseconds: 100), () {
-          if (mounted) {
-            Navigator.of(context).pushReplacement(
-              MaterialPageRoute(
-                builder: (context) => ActiveGameScreen(game: updatedGame),
-              ),
-            );
-          }
-        });
+        Navigator.of(context).pushReplacement(
+          MaterialPageRoute(
+            builder: (context) => ActiveGameScreen(game: updatedGame),
+          ),
+        );
       }
     } else {
       if (mounted) {
