@@ -1,6 +1,6 @@
 class AppConfig {
   // App name
-  static const String appName = 'Poker Chip Counter';
+  static const String appName = 'Nyanguni Kancane';
 
   // App version
   static const String appVersion = '1.0.0';

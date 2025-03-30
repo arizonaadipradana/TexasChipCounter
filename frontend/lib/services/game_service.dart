@@ -37,6 +37,17 @@ class GameService {
     // We don't disconnect between screens anymore
   }
 
+  void handlePlayerKick(String gameId) {
+    // Leave the game room
+    leaveGameRoom(gameId);
+
+    // Clear game ID cache
+    clearGameIdCache();
+
+    // Log the event
+    print('Handling player kick, game: $gameId');
+  }
+
   // Listen for general game updates
   void listenForGameUpdates(Function(dynamic) onUpdate) {
     // Clear existing listeners to avoid duplicates

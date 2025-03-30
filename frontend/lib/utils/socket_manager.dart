@@ -317,6 +317,18 @@ class SocketManager {
     }
   }
 
+  void clearRoomOnKick(String gameId) {
+    // Remove this room from tracked rooms
+    _joinedRooms.remove(gameId);
+
+    // If socket exists and is connected, explicitly leave
+    if (_socket != null && _isConnected) {
+      _socket!.emit('leave_game', gameId);
+    }
+
+    print('Room $gameId cleared due to kick');
+  }
+
   /// Check if a specific room is joined
   bool isInRoom(String roomId) {
     return _joinedRooms.contains(roomId);

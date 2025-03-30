@@ -66,18 +66,39 @@ class _GameLobbyScreenState extends State<GameLobbyScreen> {
     _gameService?.listenForPlayerUpdates(_handlePlayerUpdate, _handlePlayerKicked);
   }
 
+  // Replace the existing _handlePlayerKicked method in game_lobby_screen.dart
   void _handlePlayerKicked(String gameId, String kickedBy) {
     // This is called when the current user is kicked
     if (mounted) {
+      // Set flag to prevent unnecessary cleanup in dispose
+      _navigatingToGameScreen = true;
+
+      // Show message to user
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('You have been removed from the game'),
           backgroundColor: Colors.red,
+          duration: Duration(seconds: 2),
         ),
       );
 
-      // Navigate back to previous screen
-      Navigator.of(context).pop();
+      // Clear game ID cache to ensure clean state
+      GameService.clearGameIdCache();
+
+      // Leave the game room (clean up socket connection)
+      if (_gameService != null) {
+        _gameService!.leaveGameRoom(_game.id);
+      }
+
+      // Force navigation to home screen with a slight delay
+      Future.delayed(Duration(milliseconds: 300), () {
+        if (mounted) {
+          Navigator.of(context).pushAndRemoveUntil(
+            MaterialPageRoute(builder: (context) => const HomeScreen()),
+                (route) => false, // Remove all previous routes
+          );
+        }
+      });
     }
   }
 
@@ -286,7 +307,7 @@ class _GameLobbyScreenState extends State<GameLobbyScreen> {
 
   @override
   void dispose() {
-    // Only perform cleanup if not navigating to game screen
+    // Only perform cleanup if not navigating to game screen or kicked
     if (!_navigatingToGameScreen && _userModel?.authToken != null) {
       // Check if user is leaving voluntarily and is in the game
       if (_userModel?.id != null && _game.players.any((p) => p.userId == _userModel?.id)) {

@@ -24,7 +24,7 @@ class PokerChipCounter extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Poker Chip Counter',
+      title: 'Nyanguni Kancane',
       theme: ThemeData(
         primarySwatch: Colors.blue,
         visualDensity: VisualDensity.adaptivePlatformDensity,
