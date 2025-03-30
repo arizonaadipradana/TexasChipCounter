@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as Math;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -34,19 +35,66 @@ class PokerTableWidget extends StatefulWidget {
   State<PokerTableWidget> createState() => _PokerTableWidgetState();
 }
 
-class _PokerTableWidgetState extends State<PokerTableWidget> {
+class _PokerTableWidgetState extends State<PokerTableWidget> with WidgetsBindingObserver {
   int _lastPlayerIndex = -1;
-  String? _lastAction;
+  int _lastPot = 0;
+  final Set<String> _processedActionIds = {};
   final ScrollController _historyScrollController = ScrollController();
+
+  // Add a timer to force UI updates periodically
+  Timer? _uiRefreshTimer;
+  DateTime _lastManualRefresh = DateTime.now();
 
   @override
   void initState() {
     super.initState();
 
+    // Register as an observer to handle app lifecycle changes
+    WidgetsBinding.instance.addObserver(this);
+
+    // Initialize last known values
+    _lastPlayerIndex = widget.gameModel.currentPlayerIndex;
+    _lastPot = widget.gameModel.pot;
+
     // Scroll to the bottom of history list whenever it's opened
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _scrollToHistoryEnd();
+
+      // Start a periodic UI refresh timer to ensure UI stays updated
+      _startUiRefreshTimer();
     });
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      // When app comes back to foreground, force refresh
+      _updateUI();
+
+      // Also request a state refresh from the server
+      _requestServerRefresh();
+    }
+  }
+
+  void _startUiRefreshTimer() {
+    _uiRefreshTimer?.cancel();
+    _uiRefreshTimer = Timer.periodic(Duration(milliseconds: 1000), (timer) {
+      if (mounted) {
+        // Check if it's been at least 5 seconds since last manual refresh
+        final now = DateTime.now();
+        if (now.difference(_lastManualRefresh).inSeconds >= 5) {
+          _updateUI();
+          _lastManualRefresh = now;
+        }
+      }
+    });
+  }
+
+  void _requestServerRefresh() {
+    final userModel = Provider.of<UserModel>(context, listen: false);
+    if (widget.gameService != null && userModel.authToken != null) {
+      widget.gameService!.forceStateSynchronization(widget.gameId, userModel.authToken!);
+    }
   }
 
   void _scrollToHistoryEnd() {
@@ -63,21 +111,35 @@ class _PokerTableWidgetState extends State<PokerTableWidget> {
   void didUpdateWidget(PokerTableWidget oldWidget) {
     super.didUpdateWidget(oldWidget);
 
-    // Check if the player turn has changed
-    if (_lastPlayerIndex != widget.gameModel.currentPlayerIndex &&
-        widget.gameModel.handInProgress) {
-      _lastPlayerIndex = widget.gameModel.currentPlayerIndex;
+    bool shouldUpdate = false;
 
-      // If turn has changed, ensure UI updates
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        // This is crucial - force a UI update whenever the current player changes
-        _updateUI();
-      });
+    // Check if the player turn has changed
+    if (_lastPlayerIndex != widget.gameModel.currentPlayerIndex) {
+      _lastPlayerIndex = widget.gameModel.currentPlayerIndex;
+      shouldUpdate = true;
+      print('Player index changed to ${widget.gameModel.currentPlayerIndex}, updating UI');
+    }
+
+    // Check if pot has changed
+    if (_lastPot != widget.gameModel.pot) {
+      _lastPot = widget.gameModel.pot;
+      shouldUpdate = true;
+      print('Pot changed to ${widget.gameModel.pot}, updating UI');
+    }
+
+    // Check game status
+    if (oldWidget.gameModel.gameModel.status != widget.gameModel.gameModel.status) {
+      shouldUpdate = true;
+      print('Game status changed to ${widget.gameModel.gameModel.status}, updating UI');
+    }
+
+    // Compare other important state changes
+    if (oldWidget.gameModel.handInProgress != widget.gameModel.handInProgress) {
+      shouldUpdate = true;
+      print('Hand in progress changed to ${widget.gameModel.handInProgress}, updating UI');
     }
 
     // Also check if any player data has changed
-    bool playerDataChanged = false;
-
     if (oldWidget.gameModel.players.length == widget.gameModel.players.length) {
       for (int i = 0; i < oldWidget.gameModel.players.length; i++) {
         final oldPlayer = oldWidget.gameModel.players[i];
@@ -86,33 +148,29 @@ class _PokerTableWidgetState extends State<PokerTableWidget> {
         // Check for changes in chip balance, current bet, or folded status
         if (oldPlayer.chipBalance != newPlayer.chipBalance ||
             oldPlayer.currentBet != newPlayer.currentBet ||
-            oldPlayer.hasFolded != newPlayer.hasFolded) {
-          playerDataChanged = true;
+            oldPlayer.hasFolded != newPlayer.hasFolded ||
+            oldPlayer.isAllIn != newPlayer.isAllIn) {
+          shouldUpdate = true;
+          print('Player ${newPlayer.username} data changed, updating UI');
           break;
         }
       }
     } else {
       // Player count changed
-      playerDataChanged = true;
+      shouldUpdate = true;
+      print('Player count changed, updating UI');
     }
 
-    // If player data changed, update UI
-    if (playerDataChanged) {
+    // If any important state changed, update UI
+    if (shouldUpdate) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _updateUI();
-      });
-    }
-
-    // If pot amount changed, update UI
-    if (oldWidget.gameModel.pot != widget.gameModel.pot) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        _updateUI();
+        _lastManualRefresh = DateTime.now();
       });
     }
 
     // If history has changed, scroll to the bottom
-    if (oldWidget.gameModel.actionHistory.length !=
-        widget.gameModel.actionHistory.length) {
+    if (oldWidget.gameModel.actionHistory.length != widget.gameModel.actionHistory.length) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _scrollToHistoryEnd();
       });
@@ -156,6 +214,10 @@ class _PokerTableWidgetState extends State<PokerTableWidget> {
                   duration: Duration(seconds: 1),
                 ),
               );
+
+              // Immediately update UI
+              _updateUI();
+              _lastManualRefresh = DateTime.now();
             }
           },
         );
@@ -165,29 +227,33 @@ class _PokerTableWidgetState extends State<PokerTableWidget> {
 
   void _updateUI() {
     if (mounted) {
-      setState(() {});
+      setState(() {
+        // Explicitly update local tracking variables
+        _lastPlayerIndex = widget.gameModel.currentPlayerIndex;
+        _lastPot = widget.gameModel.pot;
+      });
 
       // Force the game model to notify listeners
       widget.gameModel.notifyListeners();
 
-      // Add a subtle animation effect to highlight the change
-      _animateTableChange();
+      // Log UI update for debugging
+      print('UI updated at ${DateTime.now().toIso8601String()} - Player Index: $_lastPlayerIndex, Pot: $_lastPot');
     }
   }
 
-  void _animateTableChange() {
-    // We'll use a very subtle animation just to draw attention to the fact
-    // that the state has changed - implemented in the widget tree with
-    // AnimatedContainer
-  }
-
+  // Public method that can be called from outside
   void updateTable() {
     _updateUI();
+    _lastManualRefresh = DateTime.now();
   }
 
   @override
   void dispose() {
+    // Clean up resources
+    WidgetsBinding.instance.removeObserver(this);
+    _uiRefreshTimer?.cancel();
     _historyScrollController.dispose();
+    _processedActionIds.clear();
     super.dispose();
   }
 }

@@ -1,12 +1,139 @@
 import 'dart:convert';
+import 'dart:math' as Math;
 import 'package:http/http.dart' as http;
 
 import '../config/api_config.dart';
 import '../models/game_model.dart';
 import '../utils/socket_manager.dart';
 
-/// API methods for game service
+/// API methods for game service with enhanced synchronization
 class GameServiceApi {
+  /// Perform a comprehensive game state synchronization
+  static Future<Map<String, dynamic>> synchronizeGameState(
+      String gameId,
+      String authToken,
+      SocketManager socketManager,
+      {bool forceBroadcast = false}) async {
+    try {
+      print('Performing comprehensive game state synchronization for: $gameId');
+
+      // 1. First validate that the gameId is valid
+      final gameIdValidation = await validateGameId(
+          gameId.length == 6 ? gameId : gameId.substring(0, Math.min(6, gameId.length)).toUpperCase(),
+          authToken
+      );
+
+      if (!gameIdValidation['exists']) {
+        return {
+          'success': false,
+          'message': 'Game does not exist or is no longer active',
+        };
+      }
+
+      // 2. Get the full game ID if we were using a short ID
+      final fullGameId = gameId.length == 6 ? gameIdValidation['gameId'] : gameId;
+
+      if (fullGameId == null) {
+        return {
+          'success': false,
+          'message': 'Failed to resolve full game ID',
+        };
+      }
+
+      // 3. Fetch fresh game state from server
+      final response = await http.get(
+        Uri.parse('${ApiConfig.baseUrl}${ApiConfig.gamesEndpoint}/$fullGameId'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $authToken',
+        },
+      );
+
+      if (response.statusCode != 200) {
+        String errorMessage = 'Failed to get game details';
+        try {
+          final errorData = jsonDecode(response.body);
+          errorMessage = errorData['message'] ?? errorMessage;
+        } catch (e) {
+          // If can't parse response, use default message
+        }
+
+        return {
+          'success': false,
+          'message': errorMessage,
+        };
+      }
+
+      // 4. Process the fresh state
+      final responseData = jsonDecode(response.body);
+      final game = GameModel.fromJson(responseData['game']);
+
+      // Preserve short ID if we had one
+      if (gameId.length == 6) {
+        game.shortId = gameId.toUpperCase();
+      }
+
+      // Also set the shortId from the response if available
+      if (responseData['game']['shortId'] != null) {
+        game.shortId = responseData['game']['shortId'];
+      }
+
+      // 5. Broadcast the state to all clients if requested
+      if (forceBroadcast && socketManager.isConnected) {
+        print('Broadcasting refreshed state to all clients');
+
+        // Send event multiple times to ensure delivery
+        for (int i = 0; i < 3; i++) {
+          Future.delayed(Duration(milliseconds: 200 * i), () {
+            socketManager.emit('game_action', {
+              'gameId': fullGameId,
+              'action': 'game_update',
+              'game': game.toJson(),
+              'timestamp': DateTime.now().toIso8601String(),
+              'source': 'forced_sync',
+              'retry': i
+            });
+          });
+        }
+
+        // Also send a turn changed event if currentPlayerIndex is available
+        if (game.currentPlayerIndex != null) {
+          socketManager.emit('game_action', {
+            'gameId': fullGameId,
+            'action': 'turn_changed',
+            'currentPlayerIndex': game.currentPlayerIndex,
+            'game': game.toJson(),
+            'timestamp': DateTime.now().toIso8601String(),
+            'source': 'forced_sync'
+          });
+        }
+
+        // Send special force_ui_refresh event to force immediate UI updates
+        socketManager.emit('game_action', {
+          'gameId': fullGameId,
+          'action': 'force_ui_refresh',
+          'game': game.toJson(),
+          'timestamp': DateTime.now().toIso8601String(),
+          'source': 'forced_sync'
+        });
+      }
+
+      print('Game state successfully synchronized');
+
+      return {
+        'success': true,
+        'game': game,
+        'message': 'Game state synchronized successfully',
+      };
+    } catch (e) {
+      print('Error in game state synchronization: $e');
+      return {
+        'success': false,
+        'message': 'Error: ${e.toString()}',
+      };
+    }
+  }
+
   /// Validate if a short game ID exists
   static Future<Map<String, dynamic>> validateGameId(String shortId,
       String authToken) async {
@@ -53,7 +180,8 @@ class GameServiceApi {
   }
 
   /// Create a new game
-  static Future<Map<String, dynamic>> createGame(String name,
+  static Future<Map<String, dynamic>> createGame(
+      String name,
       int smallBlind,
       int bigBlind,
       String authToken,) async {
@@ -100,27 +228,6 @@ class GameServiceApi {
         'message': 'Network error: ${e.toString()}',
       };
     }
-  }
-
-  /// Helper method to extract user ID from token
-  static Future<String?> _getUserIdFromToken(String token) async {
-    try {
-      // Make a request to the user info endpoint
-      final response = await http.get(
-        Uri.parse('${ApiConfig.baseUrl}/api/users/me'),
-        headers: {
-          'Authorization': 'Bearer $token',
-        },
-      );
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        return data['user']['_id'];
-      }
-    } catch (e) {
-      print('Error getting user ID from token: $e');
-    }
-    return null;
   }
 
   /// Join a game with improved error handling
@@ -247,42 +354,25 @@ class GameServiceApi {
     }
   }
 
-  /// Get all games (for demo/testing)
-  static Future<Map<String, dynamic>> getAllGames(String authToken) async {
+  /// Helper method to extract user ID from token
+  static Future<String?> _getUserIdFromToken(String token) async {
     try {
-      // Change the endpoint from /api/games/all to /api/games?status=all
-      // This avoids the backend treating "all" as an ID
+      // Make a request to the user info endpoint
       final response = await http.get(
-        Uri.parse('${ApiConfig.baseUrl}${ApiConfig.gamesEndpoint}?status=all'),
+        Uri.parse('${ApiConfig.baseUrl}/api/users/me'),
         headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer $authToken',
+          'Authorization': 'Bearer $token',
         },
       );
 
-      final responseData = jsonDecode(response.body);
-
       if (response.statusCode == 200) {
-        List<GameModel> games = (responseData['games'] as List)
-            .map((game) => GameModel.fromJson(game))
-            .toList();
-
-        return {
-          'success': true,
-          'games': games,
-        };
-      } else {
-        return {
-          'success': false,
-          'message': responseData['message'] ?? 'Failed to get games',
-        };
+        final data = jsonDecode(response.body);
+        return data['user']['_id'];
       }
     } catch (e) {
-      return {
-        'success': false,
-        'message': 'Network error: ${e.toString()}',
-      };
+      print('Error getting user ID from token: $e');
     }
+    return null;
   }
 
   /// Get game details with improved error handling and throttling
@@ -329,8 +419,7 @@ class GameServiceApi {
         }
 
         print(
-            'Successfully fetched game details. Current player index: ${game
-                .currentPlayerIndex}');
+            'Successfully fetched game details. Current player index: ${game.currentPlayerIndex}');
 
         return {
           'success': true,
@@ -352,6 +441,85 @@ class GameServiceApi {
       }
     } catch (e) {
       print('Error fetching game details: $e');
+      return {
+        'success': false,
+        'message': 'Network error: ${e.toString()}',
+      };
+    }
+  }
+
+  /// Get active games
+  static Future<Map<String, dynamic>> getActiveGames(String authToken) async {
+    try {
+      final response = await http.get(
+        Uri.parse('${ApiConfig.baseUrl}${ApiConfig.gamesEndpoint}/active'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $authToken',
+        },
+      );
+
+      final responseData = jsonDecode(response.body);
+
+      if (response.statusCode == 200) {
+        List<GameModel> games = (responseData['games'] as List)
+            .map((game) => GameModel.fromJson(game))
+            .toList();
+
+        return {
+          'success': true,
+          'games': games,
+        };
+      } else {
+        return {
+          'success': false,
+          'message': responseData['message'] ?? 'Failed to get active games',
+        };
+      }
+    } catch (e) {
+      return {
+        'success': false,
+        'message': 'Network error: ${e.toString()}',
+      };
+    }
+  }
+
+  /// Get user's games
+  static Future<Map<String, dynamic>> getUserGames(String authToken, {
+    String? status,
+  }) async {
+    try {
+      String url = '${ApiConfig.baseUrl}${ApiConfig.gamesEndpoint}/my-games';
+      if (status != null) {
+        url += '?status=$status';
+      }
+
+      final response = await http.get(
+        Uri.parse(url),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $authToken',
+        },
+      );
+
+      final responseData = jsonDecode(response.body);
+
+      if (response.statusCode == 200) {
+        List<GameModel> games = (responseData['games'] as List)
+            .map((game) => GameModel.fromJson(game))
+            .toList();
+
+        return {
+          'success': true,
+          'games': games,
+        };
+      } else {
+        return {
+          'success': false,
+          'message': responseData['message'] ?? 'Failed to get user games',
+        };
+      }
+    } catch (e) {
       return {
         'success': false,
         'message': 'Network error: ${e.toString()}',
@@ -458,8 +626,9 @@ class GameServiceApi {
     }
   }
 
-  /// Game action (check, call, raise, fold) with improved error handling
-  static Future<Map<String, dynamic>> gameAction(String gameId,
+  /// Game action (check, call, raise, fold) with enhanced sync
+  static Future<Map<String, dynamic>> gameAction(
+      String gameId,
       String actionType,
       String authToken,
       SocketManager socketManager,
@@ -510,6 +679,11 @@ class GameServiceApi {
         // Aggressively broadcast the change with multiple events
         broadcastActionWithRetries(gameId, actionType, amount, game);
 
+        // Also trigger a state sync after a slight delay to ensure everyone's in sync
+        Future.delayed(Duration(milliseconds: 500), () {
+          synchronizeGameState(gameId, authToken, socketManager, forceBroadcast: true);
+        });
+
         return {
           'success': true,
           'message': responseData['message'] ?? 'Action performed successfully',
@@ -531,82 +705,141 @@ class GameServiceApi {
     }
   }
 
-  /// Get active games
-  static Future<Map<String, dynamic>> getActiveGames(String authToken) async {
+  /// Special method to force UI refresh for all clients
+  static Future<Map<String, dynamic>> forceClientUIRefresh(
+      String gameId,
+      GameModel gameModel,
+      SocketManager socketManager) async {
     try {
-      final response = await http.get(
-        Uri.parse('${ApiConfig.baseUrl}${ApiConfig.gamesEndpoint}/active'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer $authToken',
-        },
-      );
+      print('Forcing UI refresh for all clients in game: $gameId');
 
-      final responseData = jsonDecode(response.body);
+      // Send a special event that clients will listen for to force UI updates
+      socketManager.emit('game_action', {
+        'gameId': gameId,
+        'action': 'force_ui_refresh',
+        'game': gameModel.toJson(),
+        'timestamp': DateTime.now().toIso8601String()
+      });
 
-      if (response.statusCode == 200) {
-        List<GameModel> games = (responseData['games'] as List)
-            .map((game) => GameModel.fromJson(game))
-            .toList();
-
-        return {
-          'success': true,
-          'games': games,
-        };
-      } else {
-        return {
-          'success': false,
-          'message': responseData['message'] ?? 'Failed to get active games',
-        };
-      }
+      return {
+        'success': true,
+        'message': 'UI refresh broadcast sent'
+      };
     } catch (e) {
+      print('Error in forceClientUIRefresh: $e');
       return {
         'success': false,
-        'message': 'Network error: ${e.toString()}',
+        'message': 'Error: ${e.toString()}'
       };
     }
   }
 
-  /// Get user's games
-  static Future<Map<String, dynamic>> getUserGames(String authToken, {
-    String? status,
-  }) async {
+  Future<Map<String, dynamic>> performGameAction(
+      String gameId,
+      String actionType,
+      String authToken,
+      SocketManager socketManager,
+      {int? amount}) async {
     try {
-      String url = '${ApiConfig.baseUrl}${ApiConfig.gamesEndpoint}/my-games';
-      if (status != null) {
-        url += '?status=$status';
+      print('Performing direct game action: $actionType for game: $gameId');
+
+      // Convert "bet" to "raise" for the server
+      String serverActionType = actionType;
+      if (actionType == 'bet') {
+        serverActionType = 'raise';
       }
 
-      final response = await http.get(
-        Uri.parse(url),
+      // Create request body
+      final body = <String, dynamic>{
+        'action': serverActionType,
+      };
+      if ((serverActionType == 'raise') && amount != null) {
+        body['amount'] = amount;
+      }
+
+      // Send the action to the server
+      final response = await http.post(
+        Uri.parse('${ApiConfig.baseUrl}${ApiConfig.gamesEndpoint}/$gameId/action'),
         headers: {
           'Content-Type': 'application/json',
           'Authorization': 'Bearer $authToken',
         },
+        body: jsonEncode(body),
       );
 
-      final responseData = jsonDecode(response.body);
-
       if (response.statusCode == 200) {
-        List<GameModel> games = (responseData['games'] as List)
-            .map((game) => GameModel.fromJson(game))
-            .toList();
+        final responseData = jsonDecode(response.body);
+        final game = GameModel.fromJson(responseData['game']);
+
+        // CRITICAL FIX: Broadcast turn change to all clients
+        _broadcastTurnChange(gameId, game, socketManager);
 
         return {
           'success': true,
-          'games': games,
+          'message': responseData['message'] ?? 'Action performed successfully',
+          'game': game,
         };
       } else {
+        final responseData = jsonDecode(response.body);
         return {
           'success': false,
-          'message': responseData['message'] ?? 'Failed to get user games',
+          'message': responseData['message'] ?? 'Failed to perform action',
         };
       }
     } catch (e) {
+      print('Error in performGameAction: $e');
       return {
         'success': false,
-        'message': 'Network error: ${e.toString()}',
+        'message': 'Error: ${e.toString()}',
       };
     }
+  }
+
+  /// Helper to broadcast turn change with high reliability
+  void _broadcastTurnChange(String gameId, GameModel game, SocketManager socketManager) {
+    print('Broadcasting turn change: Player ${game.currentPlayerIndex}\'s turn');
+
+    // Save current player index for reference
+    final currentPlayerIndex = game.currentPlayerIndex;
+    final previousPlayerIndex = currentPlayerIndex > 0
+        ? currentPlayerIndex - 1
+        : game.players.length - 1;
+
+    // Send multiple aggressive broadcasts
+    for (int i = 0; i < 10; i++) {
+      Future.delayed(Duration(milliseconds: 200 * i), () {
+        if (i % 2 == 0) {
+          // Turn changed event
+          socketManager.emit('turn_changed', {
+            'gameId': gameId,
+            'previousPlayerIndex': previousPlayerIndex,
+            'currentPlayerIndex': currentPlayerIndex,
+            'game': game.toJson(),
+            'timestamp': DateTime.now().toIso8601String(),
+            'retry': i
+          });
+        } else {
+          // Game update event
+          socketManager.emit('game_action', {
+            'gameId': gameId,
+            'action': 'force_ui_refresh',
+            'game': game.toJson(),
+            'timestamp': DateTime.now().toIso8601String(),
+            'retry': i
+          });
+        }
+      });
+    }
+
+    // Also send a direct message to specific event
+    socketManager.emit('turn_changed', {
+      'gameId': gameId,
+      'previousPlayerIndex': previousPlayerIndex,
+      'currentPlayerIndex': currentPlayerIndex,
+      'game': game.toJson(),
+      'timestamp': DateTime.now().toIso8601String(),
+    });
+
+    print('Turn change broadcast completed');
   }
 }

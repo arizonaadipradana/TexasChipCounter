@@ -6,12 +6,37 @@ import '../utils/socket_manager.dart';
 
 /// Handles events and real-time communication for game service
 class GameServiceEvents {
+  // Track processed events to avoid duplicates
+  static final Set<String> _processedEvents = {};
+
+  // Track game state versions
+  static final Map<String, int> _gameStateVersions = {};
+
   /// Broadcast game action with retries for reliability
   static void broadcastActionWithRetries(String gameId, String action,
       int? amount, GameModel game, SocketManager socketManager) {
+    // Create a unique event ID for deduplication
+    final eventId = '${gameId}_${action}_${DateTime.now().millisecondsSinceEpoch}';
+
+    // Skip if already processed recently
+    if (_processedEvents.contains(eventId)) {
+      print('Skipping duplicate broadcast: $eventId');
+      return;
+    }
+
+    // Add to processed events and schedule cleanup
+    _processedEvents.add(eventId);
+    Future.delayed(Duration(seconds: 5), () {
+      _processedEvents.remove(eventId);
+    });
+
+    // Increment state version for this game
+    _gameStateVersions[gameId] = (_gameStateVersions[gameId] ?? 0) + 1;
+    final stateVersion = _gameStateVersions[gameId]!;
+
     // Immediately send multiple event types for redundancy
 
-    // 1. Turn changed event
+    // 1. Turn changed event - This is critical for UI updates
     socketManager.emit('game_action', {
       'gameId': gameId,
       'action': 'turn_changed',
@@ -19,6 +44,7 @@ class GameServiceEvents {
           .currentPlayerIndex - 1 : game.players.length - 1,
       'currentPlayerIndex': game.currentPlayerIndex,
       'game': game.toJson(),
+      'stateVersion': stateVersion,
       'timestamp': DateTime.now().toIso8601String()
     });
 
@@ -32,6 +58,7 @@ class GameServiceEvents {
           .currentPlayerIndex - 1 : game.players.length - 1,
       'currentPlayerIndex': game.currentPlayerIndex,
       'game': game.toJson(),
+      'stateVersion': stateVersion,
       'timestamp': DateTime.now().toIso8601String()
     });
 
@@ -40,6 +67,16 @@ class GameServiceEvents {
       'gameId': gameId,
       'action': 'game_update',
       'game': game.toJson(),
+      'stateVersion': stateVersion,
+      'timestamp': DateTime.now().toIso8601String()
+    });
+
+    // 4. Force UI refresh event
+    socketManager.emit('game_action', {
+      'gameId': gameId,
+      'action': 'force_ui_refresh',
+      'game': game.toJson(),
+      'stateVersion': stateVersion,
       'timestamp': DateTime.now().toIso8601String()
     });
 
@@ -48,7 +85,7 @@ class GameServiceEvents {
       Future.delayed(Duration(milliseconds: 200 * i), () {
         if (socketManager.isConnected) {
           // Alternate between event types for maximum coverage
-          switch (i % 3) {
+          switch (i % 4) {
             case 0:
               socketManager.emit('game_action', {
                 'gameId': gameId,
@@ -57,6 +94,7 @@ class GameServiceEvents {
                     .currentPlayerIndex - 1 : game.players.length - 1,
                 'currentPlayerIndex': game.currentPlayerIndex,
                 'game': game.toJson(),
+                'stateVersion': stateVersion,
                 'timestamp': DateTime.now().toIso8601String(),
                 'retry': i
               });
@@ -71,6 +109,7 @@ class GameServiceEvents {
                     .currentPlayerIndex - 1 : game.players.length - 1,
                 'currentPlayerIndex': game.currentPlayerIndex,
                 'game': game.toJson(),
+                'stateVersion': stateVersion,
                 'timestamp': DateTime.now().toIso8601String(),
                 'retry': i
               });
@@ -80,6 +119,17 @@ class GameServiceEvents {
                 'gameId': gameId,
                 'action': 'game_update',
                 'game': game.toJson(),
+                'stateVersion': stateVersion,
+                'timestamp': DateTime.now().toIso8601String(),
+                'retry': i
+              });
+              break;
+            case 3:
+              socketManager.emit('game_action', {
+                'gameId': gameId,
+                'action': 'force_ui_refresh',
+                'game': game.toJson(),
+                'stateVersion': stateVersion,
                 'timestamp': DateTime.now().toIso8601String(),
                 'retry': i
               });
@@ -134,6 +184,7 @@ class GameServiceEvents {
       'game_started',
       'game_ended',
       'request_refresh',
+      'force_ui_refresh',
     ];
 
     for (final event in gameEvents) {
@@ -141,8 +192,7 @@ class GameServiceEvents {
     }
   }
 
-  /// Listen for player join/leave events
-  /// Corrected method signature with proper parameter declaration
+  /// Listen for player join/leave events - improved with better sync
   static void listenForPlayerUpdates(
       Function(GameModel) onPlayerUpdate,
       SocketManager socketManager,
@@ -156,6 +206,7 @@ class GameServiceEvents {
     socketManager.clearListeners('player_kicked');
     socketManager.clearListeners('game_started');
     socketManager.clearListeners('game_update');
+    socketManager.clearListeners('force_ui_refresh');
 
     // Listen for player join events
     socketManager.on('player_joined', (data) {
@@ -186,207 +237,277 @@ class GameServiceEvents {
       print('game_update event received: $data');
       _handleGameEvent(data, onPlayerUpdate);
     });
+
+    // Force UI refresh event
+    socketManager.on('force_ui_refresh', (data) {
+      print('force_ui_refresh event received');
+      _handleGameEvent(data, onPlayerUpdate);
+    });
   }
 
   /// Listen for all game-related real-time updates with a single handler
   /// This consolidates all event handlers to prevent socket disconnection issues
   static void listenForAllGameUpdates(
-  String gameId,
-  Function(dynamic) onUpdate,
-  SocketManager socketManager,
-  Set<String> activeGames,
-  Map<String, DateTime> lastRefreshTimes,
-  Map<String, List<Function(dynamic)>> gameUpdateCallbacks,
-  dynamic gameService) {
-  print('Setting up enhanced game update listeners for: $gameId');
+      String gameId,
+      Function(dynamic) onUpdate,
+      SocketManager socketManager,
+      Set<String> activeGames,
+      Map<String, DateTime> lastRefreshTimes,
+      Map<String, List<Function(dynamic)>> gameUpdateCallbacks,
+      dynamic gameService) {
+    print('Setting up enhanced game update listeners for: $gameId');
 
-  // Clear any existing listeners and callbacks for this game
-  clearAllGameEventListeners(socketManager);
-  gameUpdateCallbacks[gameId] = [];
+    // Clear any existing listeners and callbacks for this game
+    clearAllGameEventListeners(socketManager);
 
-  // Add callback for state changes
-  gameService.addGameUpdateCallback(gameId, onUpdate);
+    // Initialize or clear callbacks for this game
+    if (!gameUpdateCallbacks.containsKey(gameId)) {
+      gameUpdateCallbacks[gameId] = [];
+    } else {
+      gameUpdateCallbacks[gameId]!.clear();
+    }
 
-  // Handle function that processes and broadcasts events
-  void gameEventHandler(dynamic data) {
-  final eventName = data['action'] ?? 'game_update';
-  final eventGameId = data['gameId'];
+    // Add callback for state changes
+    gameUpdateCallbacks[gameId]!.add(onUpdate);
 
-  // Only process events for our game
-  if (eventGameId != gameId) return;
+    // Handler function that processes and deduplicates events
+    void gameEventHandler(dynamic data) {
+      final eventName = data['action'] ?? 'game_update';
+      final eventGameId = data['gameId'];
+      final timestamp = data['timestamp'] ?? DateTime.now().toIso8601String();
 
-  print('Received $eventName event for game: $gameId');
+      // Create unique event ID for deduplication
+      final eventId = '${eventGameId}_${eventName}_$timestamp';
 
-  // Ensure data has action and timestamp
-  if (!data.containsKey('action')) {
-  data['action'] = eventName;
-  }
-  if (!data.containsKey('timestamp')) {
-  data['timestamp'] = DateTime.now().toIso8601String();
-  }
+      // Only process events for our game
+      if (eventGameId != gameId) return;
 
-  // Process the event
-  onUpdate(data);
+      // Skip if already processed recently (except for force_ui_refresh)
+      if (_processedEvents.contains(eventId) && eventName != 'force_ui_refresh') {
+        print('Skipping duplicate event: $eventId');
+        return;
+      }
 
-  // For critical game events, refresh state and rebroadcast
-  if (eventName == 'turn_changed' ||
-  eventName == 'game_action_performed' ||
-  eventName == 'game_started') {
+      // Add to processed events and schedule cleanup
+      _processedEvents.add(eventId);
+      Future.delayed(Duration(seconds: 5), () {
+        _processedEvents.remove(eventId);
+      });
 
-  // Update last refresh time to prevent immediate periodic refresh
-  lastRefreshTimes[gameId] = DateTime.now();
+      print('Processing ${eventName} event for game: $gameId');
 
-  // Request all clients to refresh their state
-  Future.delayed(Duration(milliseconds: 300), () {
-  if (socketManager.isConnected) {
-  socketManager.emit('game_action', {
-  'gameId': gameId,
-  'action': 'request_refresh',
-  'timestamp': DateTime.now().toIso8601String()
-  });
-  }
-  });
-  }
-  }
+      // Ensure data has action and timestamp
+      if (!data.containsKey('action')) {
+        data['action'] = eventName;
+      }
+      if (!data.containsKey('timestamp')) {
+        data['timestamp'] = DateTime.now().toIso8601String();
+      }
 
-  // Listen for all relevant events
-  socketManager.on('game_update', gameEventHandler);
-  socketManager.on('game_action_performed', gameEventHandler);
-  socketManager.on('turn_changed', gameEventHandler);
-  socketManager.on('game_started', gameEventHandler);
-  socketManager.on('game_ended', gameEventHandler);
+      // Process the event
+      onUpdate(data);
 
-  // Handle refresh requests
-  socketManager.on('request_refresh', (data) {
-  if (data['gameId'] == gameId && socketManager.authToken != null) {
-  // Only refresh if we haven't recently
-  final lastRefresh = lastRefreshTimes[gameId] ?? DateTime.now().subtract(Duration(seconds: 10));
-  final timeSinceLastRefresh = DateTime.now().difference(lastRefresh);
+      // Update last refresh time to prevent immediate periodic refresh
+      lastRefreshTimes[gameId] = DateTime.now();
+    }
 
-  if (timeSinceLastRefresh.inSeconds > 1) {
-  // Get fresh state and broadcast
-  gameService.getGame(gameId, socketManager.authToken!).then((result) {
-  if (result['success']) {
-  // Update last refresh time
-  lastRefreshTimes[gameId] = DateTime.now();
+    // Listen for all relevant events
+    socketManager.on('game_update', gameEventHandler);
+    socketManager.on('game_action_performed', gameEventHandler);
+    socketManager.on('turn_changed', gameEventHandler);
+    socketManager.on('game_started', gameEventHandler);
+    socketManager.on('game_ended', gameEventHandler);
+    socketManager.on('force_ui_refresh', gameEventHandler);
 
-  // Create update event with the fresh data
-  final updateEvent = {
-  'action': 'game_update',
-  'gameId': gameId,
-  'game': (result['game'] as GameModel).toJson(),
-  'timestamp': DateTime.now().toIso8601String(),
-  'source': 'refresh_request'
-  };
+    // Handle refresh requests with higher priority and better logging
+    socketManager.on('request_refresh', (data) {
+      if (data['gameId'] == gameId && socketManager.authToken != null) {
+        print('Received refresh request for game: $gameId');
 
-  // Process locally
-  onUpdate(updateEvent);
+        // Only refresh if we haven't recently
+        final lastRefresh = lastRefreshTimes[gameId] ?? DateTime.now().subtract(Duration(seconds: 10));
+        final timeSinceLastRefresh = DateTime.now().difference(lastRefresh);
 
-  // Broadcast to others
-  socketManager.emit('game_action', updateEvent);
-  }
-  });
-  }
-  }
-  });
+        if (timeSinceLastRefresh.inSeconds > 1) {
+          print('Executing refresh request - time since last refresh: ${timeSinceLastRefresh.inSeconds}s');
+          // Get fresh state and broadcast
+          gameService.getGame(gameId, socketManager.authToken!).then((result) {
+            if (result['success']) {
+              // Update last refresh time
+              lastRefreshTimes[gameId] = DateTime.now();
 
-  print('Enhanced game event listeners set up for: $gameId');
+              // Create update event with the fresh data
+              final updateEvent = {
+                'action': 'game_update',
+                'gameId': gameId,
+                'game': (result['game'] as GameModel).toJson(),
+                'timestamp': DateTime.now().toIso8601String(),
+                'source': 'refresh_request'
+              };
+
+              // Process locally
+              onUpdate(updateEvent);
+
+              // Broadcast to others
+              socketManager.emit('game_action', updateEvent);
+
+              print('State refresh completed for game: $gameId');
+            } else {
+              print('Failed to refresh state: ${result['message'] ?? 'Unknown error'}');
+            }
+          });
+        } else {
+          print('Skipping refresh request - too recent (${timeSinceLastRefresh.inSeconds}s)');
+        }
+      }
+    });
+
+    print('Enhanced game event listeners set up for: $gameId');
   }
 
   /// Helper method to emit events with more control
   static void emit(String event, dynamic data, SocketManager socketManager) {
-  print('Emitting $event event with data: ${data.toString().substring(0, Math.min(100, data.toString().length))}...');
+    print('Emitting $event event with data: ${data.toString().substring(0, Math.min(100, data.toString().length))}...');
 
-  if (!socketManager.isConnected) {
-  print('Socket not connected, attempting to reconnect before emitting');
+    if (!socketManager.isConnected) {
+      print('Socket not connected, attempting to reconnect before emitting');
 
-  // Force reconnection
-  socketManager.forceReconnect();
+      // Force reconnection
+      socketManager.forceReconnect();
 
-  // Queue the emit for after connection with multiple retries
-  for (int i = 0; i < 3; i++) {
-  Future.delayed(Duration(milliseconds: 300 * (i + 1)), () {
-  if (socketManager.isConnected) {
-  print('Socket connected, emitting delayed event: $event (attempt ${i + 1})');
-  socketManager.emit(event, data);
-  }
-  });
-  }
+      // Queue the emit for after connection with multiple retries
+      for (int i = 0; i < 3; i++) {
+        Future.delayed(Duration(milliseconds: 300 * (i + 1)), () {
+          if (socketManager.isConnected) {
+            print('Socket connected, emitting delayed event: $event (attempt ${i + 1})');
+            socketManager.emit(event, data);
+          }
+        });
+      }
 
-  return;
-  }
+      return;
+    }
 
-  // Send the event to socket manager
-  socketManager.emit(event, data);
+    // Send the event to socket manager
+    socketManager.emit(event, data);
 
-  // Add retries for important events
-  if (event == 'game_action') {
-  for (int i = 0; i < 2; i++) {
-  Future.delayed(Duration(milliseconds: 150 * (i + 1)), () {
-  if (socketManager.isConnected) {
-  print('Sending retry ${i + 1} for event: $event');
-  socketManager.emit(event, data);
-  }
-  });
-  }
-  }
+    // Add retries for important events
+    if (event == 'game_action') {
+      final action = data['action'];
+      // For critical events, send multiple times
+      if (action == 'turn_changed' ||
+          action == 'game_action_performed' ||
+          action == 'force_ui_refresh') {
+        for (int i = 0; i < 2; i++) {
+          Future.delayed(Duration(milliseconds: 150 * (i + 1)), () {
+            if (socketManager.isConnected) {
+              print('Sending retry ${i + 1} for critical event: $action');
+              socketManager.emit(event, data);
+            }
+          });
+        }
+      }
+    }
   }
 
   /// Force resynchronization of game state
   static Future<void> resyncGameState(String gameId, String authToken, SocketManager socketManager, dynamic gameService) async {
-  print('Attempting to resync game state...');
+    print('Attempting to resync game state...');
 
-  // Step 1: Force socket reconnection
-  socketManager.forceReconnect();
+    // Step 1: Force socket reconnection
+    socketManager.forceReconnect();
 
-  // Step 2: Explicit rejoin of the game room
-  socketManager.joinGameRoom(gameId);
+    // Step 2: Explicit rejoin of the game room
+    socketManager.joinGameRoom(gameId);
 
-  // Step 3: Get latest game state from server
-  await Future.delayed(Duration(milliseconds: 500));
-  final result = await gameService.getGame(gameId, authToken);
+    // Step 3: Get latest game state from server
+    await Future.delayed(Duration(milliseconds: 500));
+    final result = await gameService.getGame(gameId, authToken);
 
-  // Step 4: Broadcast a request for all clients to refresh
-  if (result['success']) {
-  socketManager.emit('game_action', {
-  'gameId': gameId,
-  'action': 'request_refresh',
-  'timestamp': DateTime.now().toIso8601String()
-  });
+    // Step 4: Broadcast a request for all clients to refresh
+    if (result['success']) {
+      // Increment state version
+      _gameStateVersions[gameId] = (_gameStateVersions[gameId] ?? 0) + 1;
 
-  print('Game state resynced successfully');
-  return;
-  }
+      // Create multiple events for redundancy
+      final gameModel = result['game'] as GameModel;
 
-  print('Failed to resync game state');
+      // Game update event
+      socketManager.emit('game_action', {
+        'gameId': gameId,
+        'action': 'game_update',
+        'game': gameModel.toJson(),
+        'stateVersion': _gameStateVersions[gameId],
+        'timestamp': DateTime.now().toIso8601String(),
+        'source': 'resync'
+      });
+
+      // Turn changed event
+      socketManager.emit('game_action', {
+        'gameId': gameId,
+        'action': 'turn_changed',
+        'currentPlayerIndex': gameModel.currentPlayerIndex,
+        'game': gameModel.toJson(),
+        'stateVersion': _gameStateVersions[gameId],
+        'timestamp': DateTime.now().toIso8601String(),
+        'source': 'resync'
+      });
+
+      // Force UI refresh event
+      socketManager.emit('game_action', {
+        'gameId': gameId,
+        'action': 'force_ui_refresh',
+        'game': gameModel.toJson(),
+        'stateVersion': _gameStateVersions[gameId],
+        'timestamp': DateTime.now().toIso8601String(),
+        'source': 'resync'
+      });
+
+      // Request refresh event as backup
+      socketManager.emit('game_action', {
+        'gameId': gameId,
+        'action': 'request_refresh',
+        'timestamp': DateTime.now().toIso8601String()
+      });
+
+      print('Game state resynced successfully');
+      return;
+    }
+
+    print('Failed to resync game state');
   }
 
   /// Check socket connection status
   static Future<Map<String, dynamic>> checkSocketStatus(String gameId, SocketManager socketManager) async {
-  final socketId = socketManager.socketId;
-  final isConnected = socketManager.isConnected;
-  final joinedRooms = socketManager.joinedRooms;
+    final socketId = socketManager.socketId;
+    final isConnected = socketManager.isConnected;
+    final joinedRooms = socketManager.joinedRooms;
 
-  final status = {
-  'success': true,
-  'socketId': socketId,
-  'isConnected': isConnected,
-  'joinedRooms': joinedRooms.toList(),
-  'isInRoom': joinedRooms.contains(gameId),
-  'timestamp': DateTime.now().toIso8601String()
-  };
+    final status = {
+      'success': true,
+      'socketId': socketId,
+      'isConnected': isConnected,
+      'joinedRooms': joinedRooms.toList(),
+      'isInRoom': joinedRooms.contains(gameId),
+      'timestamp': DateTime.now().toIso8601String()
+    };
 
-  print('Socket status: $status');
+    print('Socket status: $status');
 
-  // Attempt to emit a status check event
-  if (isConnected) {
-  socketManager.emit('game_action', {
-  'gameId': gameId,
-  'action': 'status_check',
-  'timestamp': DateTime.now().toIso8601String()
-  });
+    // Attempt to emit a status check event
+    if (isConnected) {
+      socketManager.emit('game_action', {
+        'gameId': gameId,
+        'action': 'status_check',
+        'timestamp': DateTime.now().toIso8601String()
+      });
+    }
+
+    return status;
   }
 
-  return status;
+  /// Clear processed events cache
+  static void clearCache() {
+    _processedEvents.clear();
   }
 }

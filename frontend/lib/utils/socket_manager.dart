@@ -35,6 +35,12 @@ class SocketManager {
   // Callback to be called when significant state changes are detected
   Function(Map<String, dynamic>)? _onStateChange;
 
+  // Track specific events that need extra reliability
+  final Set<String> _criticalEventsSent = {};
+
+  // Track game state versions to detect changes
+  final Map<String, int> _gameStateVersions = {};
+
   /// Initialize the socket connection if not already connected
   /// Initialize the socket connection with better reliability
   void initSocket(String authToken, {String? userId}) {
@@ -94,6 +100,9 @@ class SocketManager {
 
       // Start heartbeat monitoring
       _startHeartbeatMonitor();
+
+      // Request fresh state for all joined rooms
+      _requestFreshStateForAllRooms();
     });
 
     _socket!.onDisconnect((_) {
@@ -164,25 +173,94 @@ class SocketManager {
       _lastEventReceived = DateTime.now();
 
       // If this is a game update, check for state changes
-      if ((event == 'game_update' || event == 'game_action_performed' ||
-          event == 'turn_changed') && data != null &&
-          data['game'] != null && _onStateChange != null) {
+      if ((event == 'game_update' ||
+          event == 'game_action_performed' ||
+          event == 'turn_changed') &&
+          data != null &&
+          data['game'] != null &&
+          _onStateChange != null) {
 
         // Compare with last state to detect significant changes
-        if (_lastGameState != null) {
-          final newPlayerIndex = data['game']['currentPlayerIndex'];
-          final oldPlayerIndex = _lastGameState!['currentPlayerIndex'];
-
-          if (newPlayerIndex != oldPlayerIndex) {
-            // Current player changed, notify
-            _onStateChange!(data);
-          }
-        }
-
-        // Update last game state
-        _lastGameState = data['game'];
+        _detectAndNotifyStateChanges(event, data);
       }
     });
+  }
+
+  // Improved state change detection
+  void _detectAndNotifyStateChanges(String event, dynamic data) {
+    if (data == null || data['game'] == null) return;
+
+    // Get current game state version
+    final gameId = data['gameId'];
+    final currentVersion = _gameStateVersions[gameId] ?? 0;
+
+    // Check for critical state changes
+    bool criticalChange = false;
+
+    // Check for player index change (turn change)
+    if (_lastGameState != null && _lastGameState!['currentPlayerIndex'] != null) {
+      final oldPlayerIndex = _lastGameState!['currentPlayerIndex'];
+      final newPlayerIndex = data['game']['currentPlayerIndex'];
+
+      if (oldPlayerIndex != newPlayerIndex) {
+        criticalChange = true;
+      }
+    }
+
+    // Check for pot amount change (indicates a bet/call/etc)
+    if (_lastGameState != null && _lastGameState!['pot'] != null) {
+      final oldPot = _lastGameState!['pot'];
+      final newPot = data['game']['pot'];
+
+      if (oldPot != newPot) {
+        criticalChange = true;
+      }
+    }
+
+    // Check for game status change
+    if (_lastGameState != null && _lastGameState!['status'] != null) {
+      final oldStatus = _lastGameState!['status'];
+      final newStatus = data['game']['status'];
+
+      if (oldStatus != newStatus) {
+        criticalChange = true;
+      }
+    }
+
+    // Update the last game state
+    _lastGameState = data['game'];
+
+    // Increment version for this game state
+    _gameStateVersions[gameId] = currentVersion + 1;
+
+    // Notify about the change if it's critical
+    if (criticalChange && _onStateChange != null) {
+      // Add version to data for tracking
+      data['stateVersion'] = _gameStateVersions[gameId];
+      _onStateChange!(data);
+
+      print('Notifying about critical state change - ' +
+          'Event: $event, Version: ${_gameStateVersions[gameId]}');
+    }
+  }
+
+  // Request fresh state for all joined rooms
+  void _requestFreshStateForAllRooms() {
+    if (_joinedRooms.isEmpty) return;
+
+    for (final roomId in _joinedRooms) {
+      // Add slight delay to avoid flooding the server
+      Future.delayed(Duration(milliseconds: 300 * _joinedRooms.toList().indexOf(roomId)), () {
+        if (_isConnected) {
+          print('Requesting fresh state for room: $roomId');
+          _socket!.emit('game_action', {
+            'gameId': roomId,
+            'action': 'request_refresh',
+            'timestamp': DateTime.now().toIso8601String()
+          });
+        }
+      });
+    }
   }
 
   // Start a heartbeat monitor to detect stale connections
@@ -209,6 +287,11 @@ class SocketManager {
 
       // Emit a ping to keep connection alive
       _socket!.emit('ping', {'timestamp': now.toIso8601String()});
+
+      // Request fresh state for active games periodically (every 20 seconds)
+      if (now.second % 20 == 0) {
+        _requestFreshStateForAllRooms();
+      }
     });
   }
 
@@ -260,6 +343,14 @@ class SocketManager {
     // Check if already in this room
     if (_joinedRooms.contains(gameId)) {
       print('Already in game room: $gameId, skipping join');
+
+      // Even if already joined, request a fresh state to ensure sync
+      _socket!.emit('game_action', {
+        'gameId': gameId,
+        'action': 'request_refresh',
+        'timestamp': DateTime.now().toIso8601String()
+      });
+
       return;
     }
 
@@ -273,6 +364,9 @@ class SocketManager {
       'action': 'request_refresh',
       'timestamp': DateTime.now().toIso8601String()
     });
+
+    // Clear any stored state version for this game
+    _gameStateVersions[gameId] = 0;
   }
 
   /// Force a reconnection of the socket
@@ -285,6 +379,10 @@ class SocketManager {
 
       // Disconnect
       _socket!.disconnect();
+
+      // Clear cached state data
+      _lastGameState = null;
+      _criticalEventsSent.clear();
 
       // Wait a moment before reconnecting
       Future.delayed(Duration(milliseconds: 500), () {
@@ -320,6 +418,9 @@ class SocketManager {
     print('Leaving game room: $gameId');
     _socket!.emit('leave_game', gameId);
     _joinedRooms.remove(gameId);
+
+    // Clear any stored state version for this game
+    _gameStateVersions.remove(gameId);
   }
 
   /// Emit an event with enhanced reliability
@@ -367,10 +468,27 @@ class SocketManager {
     // For game actions, use multiple emits for reliability
     if (event == 'game_action' && data['gameId'] != null) {
       final gameId = data['gameId'];
+      final actionType = data['action'];
 
-      // Special handling for turn changes and game actions
-      if (data['action'] == 'game_action_performed' ||
-          data['action'] == 'turn_changed') {
+      // Create a unique key for this critical event
+      String? eventKey;
+      if (actionType == 'game_action_performed' ||
+          actionType == 'turn_changed' ||
+          actionType == 'game_started') {
+        // Create a unique key for this event to avoid duplicate broadcasts
+        eventKey = '$gameId:$actionType:${DateTime.now().millisecondsSinceEpoch}';
+
+        // If we've already sent this critical event in the last 2 seconds, skip duplicates
+        if (_criticalEventsSent.contains(eventKey)) {
+          print('Skipping duplicate critical event: $eventKey');
+          return;
+        }
+
+        // Add to sent events set and schedule removal after 2 seconds
+        _criticalEventsSent.add(eventKey);
+        Future.delayed(Duration(seconds: 2), () {
+          _criticalEventsSent.remove(eventKey);
+        });
 
         // Emit multiple times with delays to ensure delivery
         for (int i = 1; i <= 3; i++) {
@@ -476,6 +594,8 @@ class SocketManager {
       _eventListeners.clear();
       _joinedRooms.clear();
       _pendingEvents.clear();
+      _gameStateVersions.clear();
+      _criticalEventsSent.clear();
       print('Socket manager disconnected and reset');
     }
   }
@@ -483,6 +603,7 @@ class SocketManager {
   void clearRoomOnKick(String gameId) {
     // Remove this room from tracked rooms
     _joinedRooms.remove(gameId);
+    _gameStateVersions.remove(gameId);
 
     // If socket exists and is connected, explicitly leave
     if (_socket != null && _isConnected) {
@@ -492,7 +613,7 @@ class SocketManager {
     print('Room $gameId cleared due to kick');
   }
 
-// Add getter for auth token
+  // Add getter for auth token
   String? get authToken => _authToken;
 
   /// Check if a specific room is joined

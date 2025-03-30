@@ -7,6 +7,7 @@ import '../models/game_model.dart';
 import '../models/poker_game_model.dart';
 import '../models/user_model.dart';
 import '../services/game_service_core.dart';
+import '../utils/turn_change_handler.dart';
 import '../widgets/poker_table_widget.dart';
 import 'poker_game_handlers.dart';
 import 'poker_game_state.dart';
@@ -28,6 +29,11 @@ class _PokerGameScreenState extends State<PokerGameScreen> with WidgetsBindingOb
   String _errorMessage = '';
   bool _isExiting = false;
   bool _handStarted = false;
+
+  // Add a timer for periodic state checks
+  Timer? _stateCheckTimer;
+  DateTime _lastStateCheck = DateTime.now();
+  int _consecutiveNoActionPeriods = 0;
 
   // Reference to state and handlers
   late PokerGameState _gameState;
@@ -57,6 +63,44 @@ class _PokerGameScreenState extends State<PokerGameScreen> with WidgetsBindingOb
     // Initialize game service after the first build
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _initializeGameService();
+
+      listenForTurnChanges();
+
+      // Start periodic state checks
+      _startStateCheckTimer();
+    });
+  }
+
+  void _startStateCheckTimer() {
+    _stateCheckTimer?.cancel();
+
+    _stateCheckTimer = Timer.periodic(Duration(seconds: 5), (timer) {
+      if (!mounted || _isExiting) return;
+
+      final now = DateTime.now();
+      final timeSinceLastCheck = now.difference(_lastStateCheck).inSeconds;
+
+      // If it's been too long since a UI update and we're expecting activity
+      if (_pokerGame.handInProgress &&
+          timeSinceLastCheck > 10 &&
+          _gameService != null) {
+
+        _consecutiveNoActionPeriods++;
+        print('No state updates for ${timeSinceLastCheck}s - consecutive periods: $_consecutiveNoActionPeriods');
+
+        // If we've detected too many periods without activity, force sync
+        if (_consecutiveNoActionPeriods >= 2) {
+          final userModel = Provider.of<UserModel>(context, listen: false);
+          if (userModel.authToken != null) {
+            print('Forcing state sync due to inactivity');
+            _handlers.manualSync(_gameService!, widget.game.id, userModel.authToken!);
+            _lastStateCheck = now;
+            _consecutiveNoActionPeriods = 0;
+          }
+        }
+      } else {
+        _consecutiveNoActionPeriods = 0;
+      }
     });
   }
 
@@ -64,6 +108,12 @@ class _PokerGameScreenState extends State<PokerGameScreen> with WidgetsBindingOb
   void didChangeAppLifecycleState(AppLifecycleState state) {
     _handlers.handleAppLifecycleChange(state, _gameService,
         widget.game.id, _isExiting, context);
+
+    // If app is resuming, always force a state check
+    if (state == AppLifecycleState.resumed) {
+      _lastStateCheck = DateTime.now();
+      _consecutiveNoActionPeriods = 0;
+    }
   }
 
   void _initializeGameService() {
@@ -121,6 +171,7 @@ class _PokerGameScreenState extends State<PokerGameScreen> with WidgetsBindingOb
     if (_gameState.forcedRefreshInProgress) return;
 
     _gameState.forcedRefreshInProgress = true;
+    _lastStateCheck = DateTime.now();
 
     try {
       print('Forcing state refresh for game: ${widget.game.id}');
@@ -155,6 +206,8 @@ class _PokerGameScreenState extends State<PokerGameScreen> with WidgetsBindingOb
           // Reset error counter on successful update
           _gameState.consecutiveErrors = 0;
           _gameState.lastSuccessfulUpdate = DateTime.now();
+          _lastStateCheck = DateTime.now();
+          _consecutiveNoActionPeriods = 0;
         });
 
         // If player index changed, update UI and show notification
@@ -201,18 +254,17 @@ class _PokerGameScreenState extends State<PokerGameScreen> with WidgetsBindingOb
       _pokerGame.notifyListeners();
 
       // Find and update the poker table widget
-      final pokerTableWidgetState = findPokerTableWidgetState(context);
+      final pokerTableWidgetState = _findPokerTableWidgetState(context);
       if (pokerTableWidgetState != null) {
         try {
-          final method = pokerTableWidgetState.runtimeType.toString().contains('_PokerTableWidgetState')
-              ? pokerTableWidgetState.updateTable : null;
-          if (method != null) {
-            method();
-          }
+          pokerTableWidgetState.updateTable();
         } catch (e) {
           print('Could not call update method: $e');
         }
       }
+
+      // Mark that we've checked state
+      _lastStateCheck = DateTime.now();
     }
   }
 
@@ -261,8 +313,39 @@ class _PokerGameScreenState extends State<PokerGameScreen> with WidgetsBindingOb
     );
   }
 
+  void listenForTurnChanges() {
+    if (_gameService == null) return;
+
+    // Listen specifically for turn_changed events with special handling
+    _gameService!.getSocketManager().on('turn_changed', (data) {
+      // Use the special handler for turn changed events
+      TurnChangeHandler.handleTurnChangedEvent(
+          data,
+          _updateUI,
+              (message, color) => _showTurnChangeNotification(message, color),
+              (message) => _showActionSnackBar(message)
+      );
+    });
+
+    // Also listen for force_ui_refresh events
+    _gameService!.getSocketManager().on('force_ui_refresh', (data) {
+      print('Received force_ui_refresh, updating UI immediately');
+      _updateUI();
+
+      // Update the poker table too
+      final pokerTableWidgetState = _findPokerTableWidgetState(context);
+      if (pokerTableWidgetState != null) {
+        try {
+          pokerTableWidgetState.updateTable();
+        } catch (e) {
+          print('Error updating table: $e');
+        }
+      }
+    });
+  }
+
   // Find PokerTableWidget state in the widget tree
-  dynamic findPokerTableWidgetState(BuildContext context) {
+  dynamic _findPokerTableWidgetState(BuildContext context) {
     dynamic result;
 
     void visitor(Element element) {
@@ -279,9 +362,7 @@ class _PokerGameScreenState extends State<PokerGameScreen> with WidgetsBindingOb
     }
 
     try {
-      if (context != null) {
-        context.visitChildElements(visitor);
-      }
+      context.visitChildElements(visitor);
     } catch (e) {
       print('Error finding PokerTableWidget: $e');
     }
@@ -296,6 +377,8 @@ class _PokerGameScreenState extends State<PokerGameScreen> with WidgetsBindingOb
 
     // Clean up state resources
     _gameState.dispose();
+    _stateCheckTimer?.cancel();
+    _handlers.clearCache();
 
     if (!_isExiting && _gameService != null) {
       // Leave the game room
@@ -345,7 +428,9 @@ class _PokerGameScreenState extends State<PokerGameScreen> with WidgetsBindingOb
                 );
 
                 // Force state synchronization
-                _gameService!.forceStateSynchronization(widget.game.id, userModel.authToken!);
+                _handlers.manualSync(_gameService!, widget.game.id, userModel.authToken!);
+                _lastStateCheck = DateTime.now();
+                _consecutiveNoActionPeriods = 0;
               }
             },
           ),
@@ -413,7 +498,7 @@ class _PokerGameScreenState extends State<PokerGameScreen> with WidgetsBindingOb
             return PokerTableWidget(
               gameModel: pokerGame,
               currentUserId: userModel.id ?? '',
-              onAction: (action, {amount}) => _handlers.handleAction(
+              onAction: (action, {amount}) => _handlers.handlePlayerAction(
                   action, pokerGame, userModel, _gameService,
                   widget.game.id, context, amount: amount),
               onStartNewHand: userModel.id == widget.game.hostId

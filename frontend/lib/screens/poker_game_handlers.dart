@@ -6,6 +6,7 @@ import '../models/game_model.dart';
 import '../models/poker_game_model.dart';
 import '../models/user_model.dart';
 import '../services/game_service_core.dart';
+import '../utils/turn_change_handler.dart';
 import 'poker_game_state.dart';
 import 'home_screen.dart';
 
@@ -15,6 +16,11 @@ class PokerGameHandlers {
   final Function(String, Color) showTurnChangeNotification;
   final Function(String) showActionSnackBar;
   final Function(bool) setHandStarted;
+
+  // Add a debouncer to prevent excessive UI updates
+  Timer? _debounceTimer;
+  DateTime? _lastUpdateTime;
+  Set<String> _processedEventIds = {};
 
   PokerGameHandlers({
     required this.updateUI,
@@ -46,15 +52,40 @@ class PokerGameHandlers {
   /// Force a state refresh from the server
   void forceStateRefresh(GameService gameService, String gameId, String authToken) {
     gameService.forceStateSynchronization(gameId, authToken);
+
+    // Update UI immediately
+    updateUI();
   }
 
-  /// Handle game updates from socket/real-time events
+  /// Handle game updates from socket/real-time events with improved debouncing
   void handleGameUpdate(dynamic data, PokerGameModel pokerGame, BuildContext context) {
     if (data == null) return;
 
     try {
       final eventType = data['action'] ?? 'unknown';
-      print('Game event received: $eventType');
+      final timestamp = data['timestamp'] ?? DateTime.now().toIso8601String();
+
+      // Create a unique event ID to prevent duplicate processing
+      final eventId = '${eventType}_${timestamp}';
+
+      // Skip if we've already processed this exact event
+      if (_processedEventIds.contains(eventId)) {
+        print('Skipping duplicate event: $eventId');
+        return;
+      }
+
+      // Add to processed set and limit its size
+      _processedEventIds.add(eventId);
+      if (_processedEventIds.length > 100) {
+        _processedEventIds = _processedEventIds.skip(_processedEventIds.length - 50).toSet();
+      }
+
+      print('Processing game event: $eventType (ID: $eventId)');
+
+      // Check if it's too soon to update UI again
+      final now = DateTime.now();
+      final shouldDebounce = _lastUpdateTime != null &&
+          now.difference(_lastUpdateTime!).inMilliseconds < 200;
 
       // If game data is available, update our model
       if (data['game'] != null) {
@@ -111,9 +142,21 @@ class PokerGameHandlers {
           setHandStarted(true);
         }
 
-        // For turn changes, show notification
-        if (playerIndexChanged) {
+        // Cancel any pending debounce timer
+        _debounceTimer?.cancel();
+
+        // Special case for force_ui_refresh - always update immediately
+        if (eventType == 'force_ui_refresh') {
           updateUI();
+          _lastUpdateTime = now;
+          return;
+        }
+
+        // For turn changes, show notification immediately
+        if (playerIndexChanged) {
+          // Update UI immediately for turn changes
+          updateUI();
+          _lastUpdateTime = now;
 
           // Show turn change notification
           if (newPlayerIndex < pokerGame.players.length) {
@@ -126,6 +169,16 @@ class PokerGameHandlers {
                 isCurrentUserTurn ? Colors.green : Colors.blue
             );
           }
+        } else if (shouldDebounce) {
+          // Debounce other updates to avoid UI flickering
+          _debounceTimer = Timer(Duration(milliseconds: 200), () {
+            updateUI();
+            _lastUpdateTime = DateTime.now();
+          });
+        } else {
+          // Update UI if not debouncing
+          updateUI();
+          _lastUpdateTime = now;
         }
       }
 
@@ -142,6 +195,9 @@ class PokerGameHandlers {
       }
     } catch (e) {
       print('Error handling game update: $e');
+
+      // Still update UI even if there was an error
+      updateUI();
     }
   }
 
@@ -162,13 +218,18 @@ class PokerGameHandlers {
         switch (actionType) {
           case 'fold':
             player.hasFolded = true;
+            player.hasActed = true;
+            break;
+          case 'check':
+            player.hasActed = true;
             break;
           case 'bet':
           case 'raise':
             if (amount != null) {
               // Convert to int first
-              final amountInt = amount is int ? amount : (amount as num).toInt();
+              final amountInt = amount is int ? amount : int.parse(amount.toString());
               player.currentBet = amountInt;
+              player.hasActed = true;
 
               // Update pot and current bet
               pokerGame.pot += amountInt;
@@ -179,8 +240,9 @@ class PokerGameHandlers {
           case 'call':
             final callAmount = data['amount'] ?? pokerGame.gameModel.currentBet;
             // Convert to int first
-            final callAmountInt = callAmount is int ? callAmount : (callAmount as num).toInt();
+            final callAmountInt = callAmount is int ? callAmount : int.parse(callAmount.toString());
             player.currentBet = callAmountInt;
+            player.hasActed = true;
 
             // Update pot
             pokerGame.pot += callAmountInt;
@@ -209,6 +271,9 @@ class PokerGameHandlers {
       }
     } catch (e) {
       print('Error handling game action: $e');
+
+      // Still update UI even if there was an error
+      updateUI();
     }
   }
 
@@ -253,6 +318,12 @@ class PokerGameHandlers {
           behavior: SnackBarBehavior.floating,
         ),
       );
+
+      // Pre-update local model to make UI more responsive
+      _preUpdateLocalModel(action, amount, pokerGame);
+
+      // Update UI immediately for responsiveness
+      updateUI();
 
       // Call the server API
       final result = await gameService.gameAction(
@@ -308,6 +379,65 @@ class PokerGameHandlers {
           backgroundColor: Colors.red,
         ),
       );
+
+      // Force UI update and state refresh
+      updateUI();
+    }
+  }
+
+  // Pre-update the local model for more responsive UI
+  void _preUpdateLocalModel(String action, int? amount, PokerGameModel pokerGame) {
+    try {
+      // Apply local changes first for responsive UI
+      final player = pokerGame.currentPlayer;
+
+      switch (action) {
+        case 'fold':
+          player.hasFolded = true;
+          player.hasActed = true;
+          break;
+        case 'check':
+          player.hasActed = true;
+          break;
+        case 'call':
+          final callAmount = pokerGame.callAmount();
+          if (callAmount > 0 && player.chipBalance >= callAmount) {
+            player.chipBalance -= callAmount;
+            player.currentBet += callAmount;
+            pokerGame.pot += callAmount;
+            player.hasActed = true;
+          }
+          break;
+        case 'raise':
+        case 'bet':
+          if (amount != null && player.chipBalance >= amount) {
+            player.chipBalance -= amount;
+            player.currentBet = amount;
+            pokerGame.pot += amount;
+            pokerGame.currentBet = amount;
+            player.hasActed = true;
+          }
+          break;
+      }
+
+      // Move to the next player locally as well
+      int nextPlayerIndex = (pokerGame.currentPlayerIndex + 1) % pokerGame.players.length;
+
+      // Find next active player
+      int count = 0;
+      while (count < pokerGame.players.length) {
+        final nextPlayer = pokerGame.players[nextPlayerIndex];
+        if (!nextPlayer.hasFolded && !nextPlayer.isAllIn) {
+          break;
+        }
+        nextPlayerIndex = (nextPlayerIndex + 1) % pokerGame.players.length;
+        count++;
+      }
+
+      pokerGame.currentPlayerIndex = nextPlayerIndex;
+    } catch (e) {
+      print('Error in pre-update: $e');
+      // Errors here are not critical
     }
   }
 
@@ -351,6 +481,9 @@ class PokerGameHandlers {
         });
       }
     }
+
+    // Force UI update
+    updateUI();
   }
 
   /// Show game rules dialog
@@ -466,6 +599,9 @@ class PokerGameHandlers {
                     );
 
                     gameService.forceStateSynchronization(gameId, userModel.authToken!);
+
+                    // Also force UI update
+                    updateUI();
                   }
                 }
               },
@@ -479,6 +615,20 @@ class PokerGameHandlers {
         );
       },
     );
+  }
+
+  /// Manually sync game state with server
+  void manualSync(GameService gameService, String gameId, String authToken) {
+    print('Manually forcing state synchronization');
+    gameService.forceStateSynchronization(gameId, authToken);
+
+    // Update UI immediately
+    updateUI();
+
+    // Schedule another update after a short delay to catch any state changes
+    Future.delayed(Duration(milliseconds: 500), () {
+      updateUI();
+    });
   }
 
   /// Helper to create status row
@@ -521,5 +671,32 @@ class PokerGameHandlers {
     if (confirmed) {
       onConfirm();
     }
+  }
+
+  void handlePlayerAction(String action, PokerGameModel pokerGame,
+      UserModel userModel, GameService? gameService, String gameId,
+      BuildContext context, {int? amount}) async {
+
+    // First handle the action normally
+    await handleAction(action, pokerGame, userModel, gameService, gameId, context, amount: amount);
+
+    // Then force a turn change update to ensure all clients see the turn change
+    if (gameService != null && userModel.authToken != null) {
+      await TurnChangeHandler.forceTurnChangeUpdate(
+          gameId,
+          userModel.authToken!,
+          gameService,
+          context,
+          updateUI
+      );
+    }
+  }
+
+  /// Clear cached state data
+  void clearCache() {
+    _processedEventIds.clear();
+    _lastUpdateTime = null;
+    _debounceTimer?.cancel();
+    _debounceTimer = null;
   }
 }

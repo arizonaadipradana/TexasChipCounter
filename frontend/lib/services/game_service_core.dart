@@ -6,14 +6,14 @@ import 'package:http/http.dart' as http;
 
 import '../config/api_config.dart';
 import '../models/game_model.dart';
+import '../utils/game_sync_manager.dart';
 import '../utils/socket_manager.dart';
 import 'auth_service.dart';
 import 'game_service_api.dart';
 import 'game_service_events.dart';
 import 'game_service_state.dart';
 
-/// Core GameService class that coordinates between socket management, 
-/// API calls, and game state
+/// Core GameService class with improved sync
 class GameService {
   // Use the singleton socket manager instead of creating a socket directly
   final SocketManager _socketManager = SocketManager();
@@ -38,8 +38,31 @@ class GameService {
   // Callbacks for game updates
   final Map<String, List<Function(dynamic)>> _gameUpdateCallbacks = {};
 
+  // Special game sync manager for critical state changes
+  final GameSyncManager _syncManager = GameSyncManager();
+
+  // Timers for periodic sync per game
+  final Map<String, Timer> _syncTimers = {};
+
   bool? get isSocketConnected {
     return _socketManager.isConnected;
+  }
+
+  static void registerGameId(String fullId) {
+    final shortId = fullId.substring(0, Math.min(6, fullId.length)).toUpperCase();
+    _gameIdMap[shortId] = fullId;
+    print('Registered game ID: $shortId -> $fullId');
+  }
+
+  /// Look up full game ID from short ID
+  static String? getFullGameId(String shortId) {
+    return _gameIdMap[shortId.toUpperCase()];
+  }
+
+  /// Clear game ID cache
+  static void clearGameIdCache() {
+    _gameIdMap.clear();
+    print('Game ID cache cleared');
   }
 
   /// Initialize socket with enhanced state handling
@@ -121,6 +144,9 @@ class GameService {
     // Track this as an active game
     _activeGames.add(gameId);
 
+    // Initialize sync manager for this game
+    _syncManager.initializeSync(gameId);
+
     // Always refresh state on join
     if (_socketManager.authToken != null) {
       getGame(gameId, _socketManager.authToken!).then((result) {
@@ -151,6 +177,13 @@ class GameService {
 
     // Remove refresh time
     _lastRefreshTimes.remove(gameId);
+
+    // Clean up sync timers
+    _syncTimers[gameId]?.cancel();
+    _syncTimers.remove(gameId);
+
+    // Clean up sync manager
+    _syncManager.cleanupGame(gameId);
   }
 
   /// Add a callback for game updates
@@ -162,61 +195,69 @@ class GameService {
     _gameUpdateCallbacks[gameId]!.add(callback);
   }
 
-  /// Register short game ID for lookup
-  static void registerGameId(String fullId) {
-    final shortId = fullId.substring(0, 6).toUpperCase();
-    _gameIdMap[shortId] = fullId;
-  }
-
-  /// Look up full game ID from short ID
-  static String? getFullGameId(String shortId) {
-    return _gameIdMap[shortId.toUpperCase()];
-  }
-
-  /// Clear game ID cache
-  static void clearGameIdCache() {
-    _gameIdMap.clear();
-    print('Game ID cache cleared');
-  }
-
-  /// Force a state synchronization from server
+  /// Force a state synchronization from server with special implementation
+  /// for fixing UI update issues
   Future<void> forceStateSynchronization(String gameId, String authToken) async {
     try {
-      print('Forcing state synchronization for game: $gameId');
+      print('Forcing comprehensive state synchronization for game: $gameId');
 
-      // Force socket reconnection first
-      _socketManager.forceReconnect();
+      // Cancel any pending throttle timer
+      _refreshThrottleTimer?.cancel();
 
-      // Wait for reconnection to complete
-      await Future.delayed(Duration(milliseconds: 1000));
-
-      // Get fresh state from server
-      final result = await getGame(gameId, authToken);
+      // Use the new comprehensive sync method
+      final result = await GameServiceApi.synchronizeGameState(
+          gameId,
+          authToken,
+          _socketManager,
+          forceBroadcast: true
+      );
 
       if (result['success']) {
-        // Update last refresh time
         _lastRefreshTimes[gameId] = DateTime.now();
 
-        // Broadcast state to all clients
-        for (int i = 0; i < 3; i++) {
-          Future.delayed(Duration(milliseconds: 300 * i), () {
-            _socketManager.emit('game_action', {
-              'gameId': gameId,
-              'action': 'game_update',
-              'game': (result['game'] as GameModel).toJson(),
-              'timestamp': DateTime.now().toIso8601String(),
-              'source': 'force_sync',
-              'retry': i
-            });
-          });
+        // Force a UI refresh for all clients
+        await GameServiceApi.forceClientUIRefresh(
+            gameId,
+            result['game'] as GameModel,
+            _socketManager
+        );
+
+        // Start a sync timer if not already started
+        if (!_syncTimers.containsKey(gameId)) {
+          _syncTimers[gameId] = _syncManager.startPeriodicSync(
+              gameId,
+              authToken,
+              this,
+              _socketManager,
+                  (GameModel gameModel) {
+                // When state updates, broadcast to any local callbacks
+                if (_gameUpdateCallbacks.containsKey(gameId)) {
+                  for (final callback in _gameUpdateCallbacks[gameId]!) {
+                    callback({
+                      'action': 'game_update',
+                      'gameId': gameId,
+                      'game': gameModel.toJson(),
+                      'timestamp': DateTime.now().toIso8601String(),
+                      'source': 'sync_timer'
+                    });
+                  }
+                }
+              }
+          );
         }
 
         print('State synchronization completed for game: $gameId');
       } else {
         print('Failed to synchronize state: ${result['message']}');
+
+        // Force socket reconnection as a fallback
+        _socketManager.forceReconnect();
       }
     } catch (e) {
       print('Error forcing state synchronization: $e');
+
+      // Force socket reconnection on error
+      _socketManager.forceReconnect();
     }
   }
 
@@ -244,6 +285,12 @@ class GameService {
     _gameUpdateCallbacks.clear();
     _activeGames.clear();
     _lastRefreshTimes.clear();
+
+    // Clean up sync timers
+    for (final timer in _syncTimers.values) {
+      timer.cancel();
+    }
+    _syncTimers.clear();
   }
 
   /// Get game details with improved error handling and throttling
@@ -288,14 +335,52 @@ class GameService {
     return await GameServiceApi.endGame(gameId, authToken, _socketManager);
   }
 
+  /// Game action with improved sync and reliability
   Future<Map<String, dynamic>> gameAction(
       String gameId,
       String actionType,
       String authToken,
       {int? amount}
       ) async {
-    return await GameServiceApi.gameAction(gameId, actionType, authToken, _socketManager, _lastRefreshTimes,
-        _broadcastActionWithRetries, amount: amount);
+    final result = await GameServiceApi.gameAction(
+        gameId,
+        actionType,
+        authToken,
+        _socketManager,
+        _lastRefreshTimes,
+        _broadcastActionWithRetries,
+        amount: amount
+    );
+
+    // Force a state refresh after gameplay actions
+    if (result['success']) {
+      // Delay to allow server to process the action
+      Future.delayed(Duration(milliseconds: 300), () {
+        // Use the sync manager for immediate reliability
+        _syncManager.forceSyncNow(
+            gameId,
+            authToken,
+            this,
+            _socketManager,
+                (GameModel gameModel) {
+              // When state updates, broadcast to any local callbacks
+              if (_gameUpdateCallbacks.containsKey(gameId)) {
+                for (final callback in _gameUpdateCallbacks[gameId]!) {
+                  callback({
+                    'action': 'force_ui_refresh',
+                    'gameId': gameId,
+                    'game': gameModel.toJson(),
+                    'timestamp': DateTime.now().toIso8601String(),
+                    'source': 'post_action_sync'
+                  });
+                }
+              }
+            }
+        );
+      });
+    }
+
+    return result;
   }
 
   void _broadcastActionWithRetries(String gameId, String action, int? amount, GameModel game) {
@@ -306,10 +391,19 @@ class GameService {
   void listenForAllGameUpdates(String gameId, Function(dynamic) onUpdate) {
     GameServiceEvents.listenForAllGameUpdates(gameId, onUpdate, _socketManager, _activeGames,
         _lastRefreshTimes, _gameUpdateCallbacks, this);
+
+    // Listen for the special force_ui_refresh event
+    _socketManager.on('force_ui_refresh', (data) {
+      if (data['gameId'] == gameId) {
+        print('Received force_ui_refresh event');
+        onUpdate(data);
+      }
+    });
   }
 
   void cleanupGameListeners() {
     GameServiceEvents.clearAllGameEventListeners(_socketManager);
+    _socketManager.clearListeners('force_ui_refresh');
   }
 
   void listenForPlayerUpdates(
@@ -363,5 +457,9 @@ class GameService {
 
   Future<Map<String, dynamic>> checkSocketStatus(String gameId) async {
     return GameServiceEvents.checkSocketStatus(gameId, _socketManager);
+  }
+
+  SocketManager getSocketManager() {
+    return _socketManager;
   }
 }
