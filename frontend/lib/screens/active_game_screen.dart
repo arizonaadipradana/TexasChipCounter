@@ -28,6 +28,8 @@ class _ActiveGameScreenState extends State<ActiveGameScreen> {
   bool _exiting = false;
   bool _isProcessingAction = false;
   bool _refreshingState = false;
+  final Set<String> _displayedNotifications = {};
+  bool _isShowingNotification = false;
 
   @override
   void initState() {
@@ -131,6 +133,9 @@ class _ActiveGameScreenState extends State<ActiveGameScreen> {
       if (data != null && data['game'] != null) {
         final updatedGame = GameModel.fromJson(data['game']);
 
+        // Preserve the short ID
+        updatedGame.shortId = _game.shortId;
+
         // Log changes for debugging
         print('Current player index: ${_game.currentPlayerIndex} -> ${updatedGame.currentPlayerIndex}');
 
@@ -140,12 +145,7 @@ class _ActiveGameScreenState extends State<ActiveGameScreen> {
 
         // Check if game is complete
         if (updatedGame.status == GameStatus.completed && _game.status != GameStatus.completed) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Game has ended'),
-              backgroundColor: Colors.blue,
-            ),
-          );
+          _showUniqueNotification('game_ended', 'Game has ended', Colors.blue);
 
           // Clear game ID cache
           GameService.clearGameIdCache();
@@ -165,12 +165,7 @@ class _ActiveGameScreenState extends State<ActiveGameScreen> {
 
           if (!stillInGame) {
             print('Current player no longer in game, returning to home');
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text('You are no longer in this game'),
-                backgroundColor: Colors.red,
-              ),
-            );
+            _showUniqueNotification('player_removed', 'You are no longer in this game', Colors.red);
 
             // Clear game ID cache
             GameService.clearGameIdCache();
@@ -212,12 +207,10 @@ class _ActiveGameScreenState extends State<ActiveGameScreen> {
           final currentPlayerName = updatedGame.currentPlayer.username;
 
           // Show a subtle notification for turn change
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('It\'s $currentPlayerName\'s turn now'),
-              duration: const Duration(seconds: 1),
-              backgroundColor: Colors.blue.shade700,
-            ),
+          _showUniqueNotification(
+              'turn_changed_${updatedGame.currentPlayerIndex}',
+              'It\'s $currentPlayerName\'s turn now',
+              Colors.blue.shade700
           );
         }
 
@@ -240,11 +233,10 @@ class _ActiveGameScreenState extends State<ActiveGameScreen> {
                   actionMessage += ' ${data['amount']} chips';
                 }
 
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Text(actionMessage),
-                    duration: const Duration(seconds: 2),
-                  ),
+                _showUniqueNotification(
+                    'action_${data['actionType']}_${previousPlayerIndex}_${DateTime.now().millisecondsSinceEpoch}',
+                    actionMessage,
+                    Colors.grey.shade800
                 );
               }
             }
@@ -258,139 +250,46 @@ class _ActiveGameScreenState extends State<ActiveGameScreen> {
     }
   }
 
-  void _handleGameAction(dynamic data) {
-    if (!mounted) return;
-
-    try {
-      // Check if this is a pot-affecting action
-      if (data != null && data['game'] != null) {
-        final updatedGame = GameModel.fromJson(data['game']);
-
-        // Update pot amount
-        setState(() {
-          _currentPot = updatedGame.pot ?? _currentPot;
-          _currentBet = updatedGame.currentBet ?? _currentBet;
-        });
-
-        // Also update the full game model
-        _handleGameUpdate(updatedGame);
-
-        // Show a snackbar with the action if provided
-        if (data['actionType'] != null && data['player'] != null) {
-          String actionMessage = '${data['player']} - ${data['actionType']}';
-          if (data['amount'] != null) {
-            actionMessage += ' ${data['amount']} chips';
-          }
-
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(actionMessage),
-              duration: const Duration(seconds: 2),
-            ),
-          );
-        }
-      }
-    } catch (e) {
-      print('Error handling game action: $e');
+  // Helper method to show notifications only once per ID
+  void _showUniqueNotification(String notificationId, String message, Color backgroundColor) {
+    // Don't show duplicate notifications within a short timeframe
+    if (_displayedNotifications.contains(notificationId)) {
+      print('Skipping duplicate notification: $notificationId');
+      return;
     }
-  }
 
-  void _handlePlayerKicked(String gameId, String kickedBy) {
-    // This is called when the current user is kicked
+    // Don't show if another notification is currently showing
+    if (_isShowingNotification) {
+      print('Skipping notification while another is showing');
+      return;
+    }
+
+    _isShowingNotification = true;
+    _displayedNotifications.add(notificationId);
+
+    // After 3 seconds, remove this notification ID from the set
+    Future.delayed(Duration(seconds: 3), () {
+      if (mounted) {
+        _displayedNotifications.remove(notificationId);
+      }
+    });
+
+    // After 1 second, allow new notifications
+    Future.delayed(Duration(seconds: 1), () {
+      if (mounted) {
+        _isShowingNotification = false;
+      }
+    });
+
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('You have been removed from the game'),
-          backgroundColor: Colors.red,
+        SnackBar(
+          content: Text(message),
+          duration: const Duration(seconds: 1),
+          backgroundColor: backgroundColor,
+          behavior: SnackBarBehavior.floating,
         ),
       );
-
-      // Navigate back to home
-      _exiting = true;
-      Navigator.of(context).pushAndRemoveUntil(
-        MaterialPageRoute(builder: (context) => const HomeScreen()),
-            (route) => false,
-      );
-    }
-  }
-
-  void _handleGameUpdate(GameModel updatedGame) {
-    if (mounted) {
-      // Log the update for debugging
-      print('Received game update in active game: ${updatedGame.players.length} players');
-      print('Game status: ${updatedGame.status}');
-      print('Current player index: ${updatedGame.currentPlayerIndex}');
-
-      // Update pot value
-      final newPot = updatedGame.pot ?? _currentPot;
-      final newBet = updatedGame.currentBet ?? _currentBet;
-
-      // Check if game is complete
-      if (updatedGame.status == GameStatus.completed && _game.status != GameStatus.completed) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Game has ended'),
-            backgroundColor: Colors.blue,
-          ),
-        );
-
-        // Clear game ID cache
-        GameService.clearGameIdCache();
-
-        // Return to home screen
-        _exiting = true;
-        Navigator.of(context).pushReplacement(
-          MaterialPageRoute(builder: (context) => const HomeScreen()),
-        );
-        return;
-      }
-
-      // Check if current player is still in the game
-      final currentUserId = _userModel?.id;
-      if (currentUserId != null) {
-        final stillInGame = updatedGame.players.any((p) => p.userId == currentUserId);
-
-        if (!stillInGame) {
-          print('Current player no longer in game, returning to home');
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('You are no longer in this game'),
-              backgroundColor: Colors.red,
-            ),
-          );
-
-          // Clear game ID cache
-          GameService.clearGameIdCache();
-
-          _exiting = true;
-          Navigator.of(context).pushReplacement(
-            MaterialPageRoute(builder: (context) => const HomeScreen()),
-          );
-          return;
-        }
-
-        // Get the current user's player from the updated game
-        final updatedPlayer = updatedGame.players.firstWhere(
-                (p) => p.userId == currentUserId,
-            orElse: () => _game.players.firstWhere(
-                    (p) => p.userId == currentUserId,
-                orElse: () => throw Exception('Player not found')
-            )
-        );
-
-        // Check if chip balance changed and update the user model
-        final currentUser = _userModel!;
-        if (updatedPlayer.chipBalance != currentUser.chipBalance) {
-          currentUser.updateChipBalance(updatedPlayer.chipBalance);
-        }
-      }
-
-      // Update the game state
-      setState(() {
-        _game = updatedGame;
-        _currentPot = newPot;
-        _currentBet = newBet;
-      });
     }
   }
 

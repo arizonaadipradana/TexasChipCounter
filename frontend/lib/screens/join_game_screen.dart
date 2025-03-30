@@ -28,26 +28,12 @@ class _JoinGameScreenState extends State<JoinGameScreen> {
     final userModel = Provider.of<UserModel>(context, listen: false);
     if (userModel.authToken != null) {
       _gameService.initSocket(userModel.authToken!);
-
-      // Pre-fetch available games in the background
-      _prefetchGames(userModel.authToken!);
-    }
-  }
-
-  Future<void> _prefetchGames(String authToken) async {
-    try {
-      // This is just to pre-populate the game ID map with existing games
-      await _gameService.getAllGames(authToken);
-    } catch (e) {
-      print('Error prefetching games: $e');
-      // Don't show error to user, this is just a background operation
     }
   }
 
   @override
   void dispose() {
     _gameIdController.dispose();
-    _gameService.disconnectSocket();
     super.dispose();
   }
 
@@ -100,7 +86,7 @@ class _JoinGameScreenState extends State<JoinGameScreen> {
           ),
         );
 
-        // Now try to join the game
+        // Now try to join the game - use the short ID directly
         final result = await _gameService.joinGame(gameId, userModel.authToken!);
         print('Join game result: $result');
 
@@ -110,6 +96,10 @@ class _JoinGameScreenState extends State<JoinGameScreen> {
 
         if (result['success']) {
           final game = result['game'] as GameModel;
+
+          // Ensure the short ID is set on the game model
+          game.shortId ??= gameId;
+
           final alreadyJoined = result['alreadyJoined'] == true;
 
           if (alreadyJoined) {

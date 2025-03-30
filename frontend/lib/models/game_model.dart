@@ -1,3 +1,5 @@
+import 'dart:math' as Math;
+
 import 'package:flutter/foundation.dart';
 import 'player_model.dart';
 
@@ -15,6 +17,7 @@ class GameModel {
   int currentPlayerIndex;
   int? pot; // Add pot field
   int? currentBet; // Add currentBet field
+  String? shortId; // Add shortId field
 
   GameModel({
     required this.id,
@@ -28,6 +31,7 @@ class GameModel {
     this.currentPlayerIndex = 0,
     this.pot, // Default is null
     this.currentBet, // Default is null
+    this.shortId, // Default is null
   });
 
   // Factory constructor to create a GameModel from JSON
@@ -40,6 +44,9 @@ class GameModel {
     }
 
     try {
+      // Extract shortId directly from the response if available
+      String? shortId = json['shortId'];
+
       return GameModel(
         id: id,
         name: json['name'],
@@ -54,6 +61,7 @@ class GameModel {
         currentPlayerIndex: json['currentPlayerIndex'] ?? 0,
         pot: json['pot'] != null ? int.tryParse(json['pot'].toString()) : null,
         currentBet: json['currentBet'] != null ? int.tryParse(json['currentBet'].toString()) : null,
+        shortId: shortId, // Store the shortId if available
       );
     } catch (e) {
       print('Error parsing game JSON: $e');
@@ -76,7 +84,18 @@ class GameModel {
       'currentPlayerIndex': currentPlayerIndex,
       'pot': pot,
       'currentBet': currentBet,
+      'shortId': shortId, // Include shortId in JSON conversion
     };
+  }
+
+  // Get the game's short ID, or a fallback if not available
+  String getShortId() {
+    if (shortId != null && shortId!.isNotEmpty) {
+      return shortId!;
+    }
+    // Fallback to first 6 chars of the full ID if no shortId is available
+    // This is for backward compatibility
+    return id.substring(0, Math.min(6, id.length)).toUpperCase();
   }
 
   // Add a player to the game

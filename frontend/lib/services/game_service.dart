@@ -157,10 +157,31 @@ class GameService {
     _clearAllGameEventListeners();
   }
 
+  // Helper method to handle game events consistently
+  void _handleGameEvent(dynamic data, Function(GameModel) onUpdate, [Function(String, String)? onKicked]) {
+    try {
+      if (data != null && data['game'] != null) {
+        final updatedGame = GameModel.fromJson(data['game']);
 
-  // Listen specifically for player join/leave events
+        // Call the update callback
+        onUpdate(updatedGame);
+
+        // If this is a kick event and the current user was kicked, call the kick callback
+        if (onKicked != null &&
+            data['action'] == 'player_kicked' &&
+            data['kickedUserId'] == _socketManager.userId) {
+          onKicked(updatedGame.id, data['removedBy'] ?? 'host');
+        }
+      }
+    } catch (e) {
+      print('Error processing event: $e');
+    }
+  }
+
+
+// Update the listenForPlayerUpdates method in GameService class
   void listenForPlayerUpdates(Function(GameModel) onPlayerUpdate, [Function(String, String)? onKicked]) {
-    print('Setting up player update listeners');
+    print('Setting up player update listeners with enhanced event handling');
 
     // Clear any existing listeners to avoid duplicates
     _socketManager.clearListeners('player_joined');
@@ -172,73 +193,31 @@ class GameService {
     // Listen for player join events
     _socketManager.on('player_joined', (data) {
       print('player_joined event received: $data');
-      try {
-        if (data != null && data['game'] != null) {
-          final updatedGame = GameModel.fromJson(data['game']);
-          onPlayerUpdate(updatedGame);
-        }
-      } catch (e) {
-        print('Error processing player_joined event: $e');
-      }
+      _handleGameEvent(data, onPlayerUpdate);
     });
 
     // Listen for player leave events
     _socketManager.on('player_left', (data) {
       print('player_left event received: $data');
-      try {
-        if (data != null && data['game'] != null) {
-          final updatedGame = GameModel.fromJson(data['game']);
-          onPlayerUpdate(updatedGame);
-        }
-      } catch (e) {
-        print('Error processing player_left event: $e');
-      }
+      _handleGameEvent(data, onPlayerUpdate);
     });
 
     // Listen for player kick events
     _socketManager.on('player_kicked', (data) {
       print('player_kicked event received: $data');
-      try {
-        if (data != null && data['game'] != null) {
-          final updatedGame = GameModel.fromJson(data['game']);
-
-          // Update the game for all players
-          onPlayerUpdate(updatedGame);
-
-          // If current user was kicked, trigger the callback
-          if (onKicked != null && data['kickedUserId'] == _socketManager.userId) {
-            onKicked(updatedGame.id, data['removedBy'] ?? 'host');
-          }
-        }
-      } catch (e) {
-        print('Error processing player_kicked event: $e');
-      }
+      _handleGameEvent(data, onPlayerUpdate, onKicked);
     });
 
-    // Listen for game started events
+    // Listen for game started events - with higher priority
     _socketManager.on('game_started', (data) {
       print('game_started event received: $data');
-      try {
-        if (data != null && data['game'] != null) {
-          final updatedGame = GameModel.fromJson(data['game']);
-          onPlayerUpdate(updatedGame);
-        }
-      } catch (e) {
-        print('Error processing game_started event: $e');
-      }
+      _handleGameEvent(data, onPlayerUpdate);
     });
 
     // Generic game update (fallback)
     _socketManager.on('game_update', (data) {
       print('game_update event received: $data');
-      try {
-        if (data != null && data['game'] != null) {
-          final updatedGame = GameModel.fromJson(data['game']);
-          onPlayerUpdate(updatedGame);
-        }
-      } catch (e) {
-        print('Error processing game_update event: $e');
-      }
+      _handleGameEvent(data, onPlayerUpdate);
     });
   }
 
@@ -300,23 +279,13 @@ class GameService {
     print('Player left notification emitted');
   }
 
-  // Validate if a short game ID exists
+
+// Validate if a short game ID exists
   Future<Map<String, dynamic>> validateGameId(String shortId, String authToken) async {
     try {
-      // First check local map for faster response
-      final fullId = getFullGameId(shortId);
-      if (fullId != null) {
-        print('Found game ID in local cache: $fullId for short ID: $shortId');
-        return {
-          'success': true,
-          'gameId': fullId,
-          'exists': true,
-        };
-      }
-
       print('Validating game ID with server: $shortId');
 
-      // If not in local map, check with server
+      // Call the server API directly with the short ID
       final response = await http.get(
         Uri.parse('${ApiConfig.baseUrl}${ApiConfig.gamesEndpoint}/validate/$shortId'),
         headers: {
@@ -331,14 +300,6 @@ class GameService {
       final responseData = jsonDecode(response.body);
 
       if (response.statusCode == 200 && responseData['success']) {
-        // Save the mapping for future reference if it exists
-        if (responseData['exists'] && responseData['gameId'] != null) {
-          _gameIdMap[shortId.toUpperCase()] = responseData['gameId'];
-          print('Saved game ID mapping: ${shortId.toUpperCase()} -> ${responseData['gameId']}');
-        } else {
-          print('Game with ID $shortId does not exist on the server');
-        }
-
         return {
           'success': true,
           'gameId': responseData['gameId'],
@@ -388,12 +349,17 @@ class GameService {
       if (response.statusCode == 201) {
         final game = GameModel.fromJson(responseData['game']);
 
-        // Register the game ID for local lookup
-        registerGameId(game.id);
+        // Get the shortId from the response and set it on the game object
+        final shortId = responseData['shortId'];
+        if (shortId != null && shortId is String) {
+          // Update the game's shortId property directly
+          game.shortId = shortId;
+        }
 
         return {
           'success': true,
           'game': game,
+          'shortId': shortId,
         };
       } else {
         return {
@@ -429,13 +395,13 @@ class GameService {
     return null;
   }
 
-  // Join a game
-  Future<Map<String, dynamic>> joinGame(String gameId, String authToken) async {
+// Join a game
+  Future<Map<String, dynamic>> joinGame(String shortId, String authToken) async {
     try {
-      print('Attempting to join game with ID: $gameId');
+      print('Attempting to join game with ID: $shortId');
 
       // First validate if the game exists
-      final validation = await validateGameId(gameId, authToken);
+      final validation = await validateGameId(shortId, authToken);
       print('Game validation result: $validation');
 
       if (!validation['exists']) {
@@ -468,6 +434,9 @@ class GameService {
           if (isPlayerInGame) {
             print('Player is already in this game, returning game object directly');
 
+            // Set the short ID on the game model
+            game.shortId = shortId;
+
             // Even if already joined, notify everyone to ensure state is synchronized
             notifyPlayerJoined(fullGameId, game);
 
@@ -498,6 +467,11 @@ class GameService {
         print('Successfully joined game');
         final game = GameModel.fromJson(responseData['game']);
 
+        // Make sure shortId is set on the model
+        if (game.shortId == null || game.shortId!.isEmpty) {
+          game.shortId = shortId;
+        }
+
         // Notify all players about the new player
         notifyPlayerJoined(fullGameId, game);
 
@@ -505,26 +479,24 @@ class GameService {
           'success': true,
           'game': game,
         };
-      } else if (response.statusCode == 400 &&
-          responseData['message']?.contains('already in this game') == true) {
+      } else if (response.statusCode == 200 && responseData['alreadyJoined'] == true) {
         // Handle the "already in game" case
         print('Player is already in this game according to server');
+        final game = GameModel.fromJson(responseData['game']);
 
-        // Get the game details again to get the latest state
-        final latestGame = await getGame(fullGameId, authToken);
-        if (latestGame['success']) {
-          // Notify everyone even on rejoin to refresh the player list
-          final game = latestGame['game'] as GameModel;
-          notifyPlayerJoined(fullGameId, game);
-
-          return {
-            'success': true,
-            'game': game,
-            'alreadyJoined': true,
-          };
-        } else {
-          return latestGame; // Return the error from getGame
+        // Make sure shortId is set on the model
+        if (game.shortId == null || game.shortId!.isEmpty) {
+          game.shortId = shortId;
         }
+
+        // Notify everyone even on rejoin to refresh the player list
+        notifyPlayerJoined(fullGameId, game);
+
+        return {
+          'success': true,
+          'game': game,
+          'alreadyJoined': true,
+        };
       } else {
         print('Failed to join game: ${responseData['message']}');
         return {
@@ -592,7 +564,7 @@ class GameService {
     try {
       print('Fetching game details for ID: $gameId');
 
-      // Check if it's a short ID needing conversion
+      // Check if it's a short ID (6 characters) needing conversion
       String fullGameId = gameId;
       if (gameId.length == 6) {
         final validation = await validateGameId(gameId, authToken);
@@ -618,6 +590,16 @@ class GameService {
       if (response.statusCode == 200) {
         final responseData = jsonDecode(response.body);
         final game = GameModel.fromJson(responseData['game']);
+
+        // If the original gameId was a short ID, set it on the model
+        if (gameId.length == 6) {
+          game.shortId = gameId.toUpperCase();
+        }
+
+        // Also set the shortId from the response if available
+        if (responseData['game']['shortId'] != null) {
+          game.shortId = responseData['game']['shortId'];
+        }
 
         print('Successfully fetched game details. Current player index: ${game.currentPlayerIndex}');
 

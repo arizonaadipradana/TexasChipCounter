@@ -31,6 +31,13 @@ const gameSchema = new mongoose.Schema({
     required: [true, 'Game name is required'],
     trim: true
   },
+  shortId: {
+    type: String,
+    trim: true,
+    uppercase: true,
+    minlength: 6,
+    maxlength: 6
+  },
   hostId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',

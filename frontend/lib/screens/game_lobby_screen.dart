@@ -23,6 +23,7 @@ class _GameLobbyScreenState extends State<GameLobbyScreen> {
   bool _isLoading = false;
   late String _shortGameId;
   GameService? _gameService;
+  bool _lastUpdateWasGameStart = false;
   UserModel? _userModel; // Nullable to prevent initialization errors
 
   // Add a flag to track if navigating to game screen to avoid unnecessary cleanup
@@ -32,10 +33,9 @@ class _GameLobbyScreenState extends State<GameLobbyScreen> {
   void initState() {
     super.initState();
     _game = widget.game;
-    _shortGameId = _game.id.substring(0, 6).toUpperCase();
 
-    // Register this game ID for future lookups
-    GameService.registerGameId(_game.id);
+    // Use the new method to get the short game ID
+    _shortGameId = _game.shortId ?? _game.getShortId();
 
     // Initialize game service in the next frame after context is available
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -66,61 +66,42 @@ class _GameLobbyScreenState extends State<GameLobbyScreen> {
     _gameService?.listenForPlayerUpdates(_handlePlayerUpdate, _handlePlayerKicked);
   }
 
-  // Replace the existing _handlePlayerKicked method in game_lobby_screen.dart
-  void _handlePlayerKicked(String gameId, String kickedBy) {
-    // This is called when the current user is kicked
-    if (mounted) {
-      // Set flag to prevent unnecessary cleanup in dispose
-      _navigatingToGameScreen = true;
-
-      // Show message to user
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('You have been removed from the game'),
-          backgroundColor: Colors.red,
-          duration: Duration(seconds: 2),
-        ),
-      );
-
-      // Clear game ID cache to ensure clean state
-      GameService.clearGameIdCache();
-
-      // Leave the game room (clean up socket connection)
-      if (_gameService != null) {
-        _gameService!.leaveGameRoom(_game.id);
-      }
-
-      // Force navigation to home screen with a slight delay
-      Future.delayed(Duration(milliseconds: 300), () {
-        if (mounted) {
-          Navigator.of(context).pushAndRemoveUntil(
-            MaterialPageRoute(builder: (context) => const HomeScreen()),
-                (route) => false, // Remove all previous routes
-          );
-        }
-      });
-    }
-  }
-
+  // Handle player updates including the short ID
   void _handlePlayerUpdate(GameModel updatedGame) {
     if (mounted) {
       // Log the update for debugging
       print('Received game update: ${updatedGame.players.length} players');
       print('Game status: ${updatedGame.status}');
 
+      // Preserve the short ID when updating the game model
+      updatedGame.shortId = _shortGameId;
+
       // Check if game status changed to active
       if (updatedGame.status == GameStatus.active && _game.status != GameStatus.active) {
         print('Game started, navigating to active game screen');
 
+        // Set this flag to prevent duplicate navigation
+        if (_lastUpdateWasGameStart) {
+          print('Already handling a game start event, ignoring duplicate');
+          return;
+        }
+
+        _lastUpdateWasGameStart = true;
+
         // Set flag to prevent unnecessary cleanup in dispose
         _navigatingToGameScreen = true;
 
-        // Navigate to the active game screen
-        Navigator.of(context).pushReplacement(
-          MaterialPageRoute(
-            builder: (context) => ActiveGameScreen(game: updatedGame),
-          ),
-        );
+        // Add a small delay to allow all clients to receive the update
+        Future.delayed(Duration(milliseconds: 250), () {
+          if (mounted) {
+            // Navigate to the active game screen
+            Navigator.of(context).pushReplacement(
+              MaterialPageRoute(
+                builder: (context) => ActiveGameScreen(game: updatedGame),
+              ),
+            );
+          }
+        });
         return;
       }
 
@@ -195,6 +176,39 @@ class _GameLobbyScreenState extends State<GameLobbyScreen> {
     }
   }
 
+
+  void _handlePlayerKicked(String gameId, String kickedBy) {
+    // This is called when the current user is kicked
+    if (mounted) {
+      // Set flag to prevent unnecessary cleanup in dispose
+      _navigatingToGameScreen = true;
+
+      // Show message to user
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('You have been removed from the game'),
+          backgroundColor: Colors.red,
+          duration: Duration(seconds: 2),
+        ),
+      );
+
+      // Leave the game room (clean up socket connection)
+      if (_gameService != null) {
+        _gameService!.leaveGameRoom(_game.id);
+      }
+
+      // Force navigation to home screen with a slight delay
+      Future.delayed(Duration(milliseconds: 300), () {
+        if (mounted) {
+          Navigator.of(context).pushAndRemoveUntil(
+            MaterialPageRoute(builder: (context) => const HomeScreen()),
+                (route) => false, // Remove all previous routes
+          );
+        }
+      });
+    }
+  }
+
   void _copyGameId() {
     Clipboard.setData(ClipboardData(text: _shortGameId)).then((_) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -231,6 +245,7 @@ class _GameLobbyScreenState extends State<GameLobbyScreen> {
       createdAt: _game.createdAt,
       status: _game.status,
       currentPlayerIndex: _game.currentPlayerIndex,
+      shortId: _shortGameId, // Preserve the short ID
     );
 
     // Update local state first for responsive UI
@@ -242,6 +257,7 @@ class _GameLobbyScreenState extends State<GameLobbyScreen> {
     _gameService?.notifyPlayerRemoved(_game.id, updatedGame, userId);
   }
 
+// Update the startGame method in the lobby screen to show feedback immediately
   Future<void> _startGame() async {
     if (_game.players.length < 2) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -272,6 +288,20 @@ class _GameLobbyScreenState extends State<GameLobbyScreen> {
       return;
     }
 
+    // Provide immediate feedback that game is starting
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Starting game...'),
+        duration: Duration(seconds: 1),
+      ),
+    );
+
+    // Optimistically update the game status to give immediate feedback
+    setState(() {
+      // This is a temporary UI update before the server responds
+      _game.status = GameStatus.active;
+    });
+
     // Call API to start the game
     final result = await _gameService!.startGame(_game.id, _userModel!.authToken!);
 
@@ -282,19 +312,33 @@ class _GameLobbyScreenState extends State<GameLobbyScreen> {
     if (result['success']) {
       final updatedGame = result['game'] as GameModel;
 
+      // Preserve the short ID
+      updatedGame.shortId = _shortGameId;
+
       // Set flag to avoid unnecessary cleanup
       _navigatingToGameScreen = true;
+      _lastUpdateWasGameStart = true;
 
       // Navigate to active game screen
       if (mounted) {
-        Navigator.of(context).pushReplacement(
-          MaterialPageRoute(
-            builder: (context) => ActiveGameScreen(game: updatedGame),
-          ),
-        );
+        // Add a slight delay to allow socket events to propagate
+        Future.delayed(Duration(milliseconds: 100), () {
+          if (mounted) {
+            Navigator.of(context).pushReplacement(
+              MaterialPageRoute(
+                builder: (context) => ActiveGameScreen(game: updatedGame),
+              ),
+            );
+          }
+        });
       }
     } else {
       if (mounted) {
+        // Revert the optimistic update if the API call failed
+        setState(() {
+          _game.status = GameStatus.pending;
+        });
+
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(result['message']),
@@ -323,6 +367,7 @@ class _GameLobbyScreenState extends State<GameLobbyScreen> {
           createdAt: _game.createdAt,
           status: _game.status,
           currentPlayerIndex: _game.currentPlayerIndex,
+          shortId: _shortGameId, // Preserve the short ID
         );
 
         // Notify others that player is leaving
@@ -331,11 +376,6 @@ class _GameLobbyScreenState extends State<GameLobbyScreen> {
 
       // Leave the game room
       _gameService?.leaveGameRoom(_game.id);
-
-      // Clear game ID cache when leaving
-      if (!_navigatingToGameScreen) {
-        GameService.clearGameIdCache();
-      }
     }
 
     super.dispose();

@@ -20,6 +20,9 @@ const userRoutes = require('./routes/user.routes');
 const gameRoutes = require('./routes/game.routes');
 const transactionRoutes = require('./routes/transaction.routes');
 
+// Import models including the new GameId model
+const GameId = require('./models/game_id.model');
+
 // Create Express app
 const app = express();
 const server = http.createServer(app);
@@ -52,6 +55,16 @@ mongoose.connect(process.env.MONGODB_URI, {
 })
   .then(() => {
     console.log('Connected to MongoDB');
+
+    // Initialize our unique game ID system
+    console.log('Initializing game ID system...');
+    GameId.countDocuments()
+      .then(count => {
+        console.log(`Found ${count} registered game IDs in the database`);
+      })
+      .catch(error => {
+        console.error('Error checking game IDs:', error);
+      });
   })
   .catch((error) => {
     console.error('MongoDB connection error:', error);
@@ -170,6 +183,9 @@ io.on('connection', (socket) => {
     });
   });
 });
+
+// Make io accessible to routes
+app.set('io', io);
 
 // Default route
 app.get('/', (req, res) => {

@@ -1,10 +1,13 @@
 const Game = require('../models/game.model');
 const User = require('../models/user.model');
+const GameId = require('../models/game_id.model');
 const Transaction = require('../models/transaction.model');
+const mongoose = require('mongoose');
 
-// Create a new game
+// Create a new game with unique ID
 exports.createGame = async (req, res) => {
   try {
+    console.log("Create game request received");
     const { name, smallBlind, bigBlind } = req.body;
     const hostId = req.userId;
 
@@ -25,10 +28,22 @@ exports.createGame = async (req, res) => {
       });
     }
 
+    console.log("Creating game object");
+
+    // Generate a temporary 6-character ID
+    const charset = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    let shortId = '';
+    for (let i = 0; i < 6; i++) {
+      shortId += charset.charAt(Math.floor(Math.random() * charset.length));
+    }
+    console.log(`Generated short ID: ${shortId}`);
+
+    // Store the short ID directly in the game document (as a temporary solution)
     // Create game
     const game = new Game({
       name,
       hostId,
+      shortId, // Add shortId directly to the game document as a temporary solution
       smallBlind: parseInt(smallBlind),
       bigBlind: parseInt(bigBlind),
       players: [{
@@ -40,13 +55,16 @@ exports.createGame = async (req, res) => {
       }]
     });
 
+    console.log("Saving game to database");
     // Save game
-    await game.save();
+    const savedGame = await game.save();
 
+    // Return success response with the game and short ID
     return res.status(201).json({
       success: true,
-      message: 'Game created successfully',
-      game
+      message: 'Game created successfully (with temporary ID)',
+      game: savedGame,
+      shortId: shortId
     });
   } catch (error) {
     console.error('Create game error:', error);
@@ -64,8 +82,21 @@ exports.joinGame = async (req, res) => {
     const { gameId } = req.params;
     const userId = req.userId;
 
-    // Find game
-    const game = await Game.findById(gameId);
+    console.log(`Attempting to join game with ID: ${gameId}`);
+
+    // Find game - could be full MongoDB ID or shortId
+    let game;
+
+    // First try to find by MongoDB ObjectId
+    if (mongoose.Types.ObjectId.isValid(gameId)) {
+      game = await Game.findById(gameId);
+    }
+
+    // If not found, try by shortId
+    if (!game && gameId.length === 6) {
+      game = await Game.findOne({ shortId: gameId.toUpperCase() });
+    }
+
     if (!game) {
       return res.status(404).json({
         success: false,
@@ -96,9 +127,11 @@ exports.joinGame = async (req, res) => {
     );
 
     if (existingPlayer) {
-      return res.status(400).json({
-        success: false,
-        message: 'You are already in this game'
+      return res.status(200).json({
+        success: true,
+        message: 'You are already in this game',
+        game,
+        alreadyJoined: true
       });
     }
 
@@ -129,7 +162,7 @@ exports.joinGame = async (req, res) => {
   }
 };
 
-// Get game details
+// Get game details with short ID information
 exports.getGame = async (req, res) => {
   try {
     const { gameId } = req.params;
@@ -143,9 +176,17 @@ exports.getGame = async (req, res) => {
       });
     }
 
+    // Find the short ID for this game
+    const gameIdRecord = await GameId.findOne({ fullId: game._id });
+    const shortId = gameIdRecord ? gameIdRecord.shortId : null;
+
+    // Add the short ID to the response
+    const gameResponse = game.toObject();
+    gameResponse.shortId = shortId;
+
     return res.status(200).json({
       success: true,
-      game
+      game: gameResponse
     });
   } catch (error) {
     console.error('Get game error:', error);
@@ -198,12 +239,37 @@ exports.startGame = async (req, res) => {
 
     // Start game
     game.startGame();
-    await game.save();
+
+    // Save game with updated status
+    const savedGame = await game.save();
+
+    // Get the io instance to broadcast updates to all connected clients
+    const io = req.app.get('io');
+    if (io) {
+      // Emit a specific game_started event to all clients in this game room
+      console.log(`Broadcasting game_started event to room: ${gameId}`);
+      io.to(gameId).emit('game_started', {
+        gameId,
+        action: 'game_started',
+        message: 'Game has started!',
+        game: savedGame.toObject(),
+        timestamp: new Date().toISOString()
+      });
+
+      // Also emit a general game_update event for clients that might not be listening to game_started
+      io.to(gameId).emit('game_update', {
+        gameId,
+        action: 'game_update',
+        message: 'Game has started!',
+        game: savedGame.toObject(),
+        timestamp: new Date().toISOString()
+      });
+    }
 
     return res.status(200).json({
       success: true,
       message: 'Game started successfully',
-      game
+      game: savedGame
     });
   } catch (error) {
     console.error('Start game error:', error);
@@ -420,7 +486,8 @@ exports.endGame = async (req, res) => {
     // End game
     game.endGame();
 
-    // Save game
+    // We've removed the GameId model, so we don't need to mark it inactive
+    // Just save the game with the completed status
     await game.save();
 
     return res.status(200).json({
@@ -437,6 +504,7 @@ exports.endGame = async (req, res) => {
     });
   }
 };
+
 
 // Get active games
 exports.getActiveGames = async (req, res) => {
@@ -527,6 +595,7 @@ exports.getAllGames = async (req, res) => {
   }
 };
 
+// Validate a short game ID
 exports.validateGameId = async (req, res) => {
   try {
     const { shortId } = req.params;
@@ -539,27 +608,13 @@ exports.validateGameId = async (req, res) => {
       });
     }
 
-    // Get all games
-    const allGames = await Game.find({});
+    console.log(`Validating game ID: ${shortId}`);
 
-    console.log('All game IDs:', allGames.map(g => g._id.toString()));
-    console.log('Short ID to find:', shortId.toUpperCase());
+    // Find game directly using shortId
+    const game = await Game.findOne({ shortId: shortId.toUpperCase() });
 
-    // Find a game where ID starts with the short ID (case insensitive)
-    const matchingGame = allGames.find(game => {
-      const gameIdStr = game._id.toString();
-
-      // For UUID-style IDs (checking with and without hyphens)
-      const idWithoutHyphens = gameIdStr.replace(/-/g, '');
-      const shortIdUpper = shortId.toUpperCase();
-
-      // Check if the game ID starts with the short ID (with or without hyphens)
-      return gameIdStr.toUpperCase().startsWith(shortIdUpper) ||
-             idWithoutHyphens.toUpperCase().startsWith(shortIdUpper);
-    });
-
-    if (!matchingGame) {
-      console.log('No matching game found for shortId:', shortId);
+    if (!game) {
+      console.log(`No game found with shortId: ${shortId}`);
       return res.status(200).json({
         success: true,
         exists: false,
@@ -567,13 +622,13 @@ exports.validateGameId = async (req, res) => {
       });
     }
 
-    console.log('Matching game found:', matchingGame._id.toString());
+    console.log(`Found game with ID: ${game._id} for shortId: ${shortId}`);
 
-    // Return the matching game ID
+    // Return the game's MongoDB ID
     return res.status(200).json({
       success: true,
       exists: true,
-      gameId: matchingGame._id.toString()
+      gameId: game._id.toString()
     });
   } catch (error) {
     console.error('Validate game ID error:', error);
