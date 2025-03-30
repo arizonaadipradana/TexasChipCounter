@@ -79,21 +79,28 @@ class _PokerGameScreenState extends State<PokerGameScreen> {
 
       // Check if game is already in progress
       _checkGameStatus(userModel);
-
     } catch (e) {
       setState(() {
         _isInitializing = false;
         _errorMessage = 'Error initializing poker game: ${e.toString()}';
       });
     }
+
   }
 
   // Setup periodic refresh to keep game state in sync
   void _setupPeriodicRefresh() {
+    // Cancel any existing timer
     _refreshTimer?.cancel();
+
+    // Set up new timer - refresh every 3 seconds as a backup
     _refreshTimer = Timer.periodic(Duration(seconds: 3), (timer) {
       if (mounted && !_isExiting) {
+        // Silently refresh the game state
         _refreshGameState(silent: true);
+      } else {
+        // Cancel timer if widget is disposed
+        timer.cancel();
       }
     });
   }
@@ -107,7 +114,8 @@ class _PokerGameScreenState extends State<PokerGameScreen> {
 
     try {
       final userModel = Provider.of<UserModel>(context, listen: false);
-      final result = await _gameService!.getGame(widget.game.id, userModel.authToken!);
+      final result =
+          await _gameService!.getGame(widget.game.id, userModel.authToken!);
 
       if (result['success'] && mounted) {
         final updatedGame = result['game'] as GameModel;
@@ -116,12 +124,16 @@ class _PokerGameScreenState extends State<PokerGameScreen> {
         setState(() {
           // Update base game properties
           _pokerGame.gameModel.status = updatedGame.status;
-          _pokerGame.gameModel.currentPlayerIndex = updatedGame.currentPlayerIndex;
-          _pokerGame.gameModel.pot = updatedGame.pot ?? _pokerGame.gameModel.pot;
-          _pokerGame.gameModel.currentBet = updatedGame.currentBet ?? _pokerGame.gameModel.currentBet;
+          _pokerGame.gameModel.currentPlayerIndex =
+              updatedGame.currentPlayerIndex;
+          _pokerGame.gameModel.pot =
+              updatedGame.pot ?? _pokerGame.gameModel.pot;
+          _pokerGame.gameModel.currentBet =
+              updatedGame.currentBet ?? _pokerGame.gameModel.currentBet;
 
           // Make sure the short ID is preserved
-          if (_pokerGame.gameModel.shortId == null && updatedGame.shortId != null) {
+          if (_pokerGame.gameModel.shortId == null &&
+              updatedGame.shortId != null) {
             _pokerGame.gameModel.shortId = updatedGame.shortId;
           }
 
@@ -139,7 +151,8 @@ class _PokerGameScreenState extends State<PokerGameScreen> {
     if (_gameService == null) return;
 
     try {
-      final result = await _gameService!.getGame(widget.game.id, userModel.authToken!);
+      final result =
+          await _gameService!.getGame(widget.game.id, userModel.authToken!);
       if (result['success']) {
         final updatedGame = result['game'] as GameModel;
 
@@ -150,6 +163,77 @@ class _PokerGameScreenState extends State<PokerGameScreen> {
       }
     } catch (e) {
       print('Error checking game status: $e');
+    }
+  }
+
+  void _handleGameAction(dynamic data) {
+    try {
+      final actionType = data['actionType'];
+      final amount = data['amount'];
+      final playerIndex = data['previousPlayerIndex'] ??
+          (_pokerGame.currentPlayerIndex > 0 ?
+          _pokerGame.currentPlayerIndex - 1 :
+          _pokerGame.players.length - 1);
+
+      if (playerIndex >= 0 && playerIndex < _pokerGame.players.length) {
+        final player = _pokerGame.players[playerIndex];
+
+        setState(() {
+          // Update player state based on action type
+          switch (actionType) {
+            case 'fold':
+              player.hasFolded = true;
+              break;
+            case 'bet':
+            case 'raise':
+              if (amount != null) {
+                // Convert to int first
+                final amountInt = amount is int ? amount : (amount as num).toInt();
+                player.currentBet = amountInt;
+                // Update pot directly for immediate visual feedback
+                _pokerGame.pot += amountInt;
+                // Update local pot value
+                _pokerGame.gameModel.pot = _pokerGame.pot;
+                // Update current bet amount
+                _pokerGame.gameModel.currentBet = amountInt;
+              }
+              break;
+            case 'call':
+              final callAmount = data['amount'] ?? _pokerGame.gameModel.currentBet;
+              // Convert to int first
+              final callAmountInt = callAmount is int ? callAmount : (callAmount as num).toInt();
+              player.currentBet = callAmountInt;
+              // Update pot for immediate visual feedback
+              _pokerGame.pot += callAmountInt;
+              // Update local pot value
+              _pokerGame.gameModel.pot = _pokerGame.pot;
+              break;
+          }
+        });
+
+        // Display action notification
+        String actionMessage = '${player.username} ';
+        if (actionType == 'fold') {
+          actionMessage += 'folded';
+        } else if (actionType == 'check') {
+          actionMessage += 'checked';
+        } else if (actionType == 'call') {
+          actionMessage += 'called ${_pokerGame.gameModel.currentBet} chips';
+        } else if (actionType == 'bet') {
+          actionMessage += 'bet $amount chips';
+        } else if (actionType == 'raise') {
+          actionMessage += 'raised to $amount chips';
+        }
+
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(actionMessage),
+              duration: const Duration(seconds: 2),
+            )
+        );
+      }
+    } catch (e) {
+      print('Error handling game action: $e');
     }
   }
 
@@ -168,9 +252,8 @@ class _PokerGameScreenState extends State<PokerGameScreen> {
         _handStarted = true;
 
         // Ensure we have the correct number of players
-        _pokerGame.players = existingGame.players
-            .map((p) => PokerPlayer.fromPlayer(p))
-            .toList();
+        _pokerGame.players =
+            existingGame.players.map((p) => PokerPlayer.fromPlayer(p)).toList();
       }
     });
 
@@ -183,13 +266,27 @@ class _PokerGameScreenState extends State<PokerGameScreen> {
     if (data == null || !mounted) return;
 
     try {
+      // Special handling for force_refresh events
+      if (data['action'] == 'force_refresh') {
+        print('Handling force_refresh event');
+        setState(() {
+          // Just trigger a rebuild
+        });
+
+        // Force the poker game model to notify listeners
+        _pokerGame.notifyListeners();
+        return;
+      }
+
       // If game data is available, update our model
       if (data['game'] != null) {
         final updatedGame = GameModel.fromJson(data['game']);
 
         // Log the updated state for debugging
         print('Game update received: Current player index: ${updatedGame.currentPlayerIndex}, Status: ${updatedGame.status}');
+        print('Pot updated: ${updatedGame.pot}, Current bet: ${updatedGame.currentBet}');
 
+        // Force UI update with setState
         setState(() {
           // Update base game properties
           _pokerGame.gameModel.status = updatedGame.status;
@@ -197,11 +294,58 @@ class _PokerGameScreenState extends State<PokerGameScreen> {
           _pokerGame.gameModel.pot = updatedGame.pot ?? _pokerGame.gameModel.pot;
           _pokerGame.gameModel.currentBet = updatedGame.currentBet ?? _pokerGame.gameModel.currentBet;
 
-          // Update player data if needed
-          if (updatedGame.players.length != _pokerGame.players.length) {
-            _pokerGame.players = updatedGame.players
-                .map((p) => PokerPlayer.fromPlayer(p))
-                .toList();
+          // Update player data
+          if (updatedGame.players.isNotEmpty) {
+            // Check if player count changed (someone joined/left)
+            if (updatedGame.players.length != _pokerGame.players.length) {
+              print('Player count changed: ${_pokerGame.players.length} -> ${updatedGame.players.length}');
+              // Update entire player list
+              _pokerGame.players = updatedGame.players
+                  .map((p) => PokerPlayer.fromPlayer(p))
+                  .toList();
+            } else {
+              // Update each player's data
+              for (final updatedPlayer in updatedGame.players) {
+                final existingPlayerIndex = _pokerGame.players.indexWhere(
+                        (p) => p.userId == updatedPlayer.userId
+                );
+
+                if (existingPlayerIndex >= 0) {
+                  // Update important properties
+                  _pokerGame.players[existingPlayerIndex].chipBalance = updatedPlayer.chipBalance;
+
+                  // Check if there's bet information from the current round
+                  if (data['action'] == 'game_action_performed' ||
+                      data['action'] == 'turn_changed') {
+                    // Find the player who acted
+                    if (data['previousPlayerIndex'] != null &&
+                        data['previousPlayerIndex'] < _pokerGame.players.length) {
+                      final actingPlayerIndex = data['previousPlayerIndex'];
+                      final actionType = data['actionType'];
+
+                      if (actionType == 'bet' || actionType == 'raise' || actionType == 'call') {
+                        int betAmount = 0;
+
+                        if (actionType == 'bet' || actionType == 'raise') {
+                          betAmount = data['amount'] is int
+                              ? data['amount']
+                              : (data['amount'] as num?)?.toInt() ?? 0;
+                        } else if (actionType == 'call') {
+                          // Handle nullable currentBet
+                          betAmount = _pokerGame.gameModel.currentBet ?? 0;
+                        }
+
+                        if (betAmount > 0) {
+                          _pokerGame.players[actingPlayerIndex].currentBet = betAmount;
+                        }
+                      } else if (actionType == 'fold') {
+                        _pokerGame.players[actingPlayerIndex].hasFolded = true;
+                      }
+                    }
+                  }
+                }
+              }
+            }
           }
 
           // Start a hand if game is active and we haven't started yet
@@ -212,24 +356,24 @@ class _PokerGameScreenState extends State<PokerGameScreen> {
         });
 
         // Show turn change notification
-        if (data['action'] == 'turn_changed' || data['action'] == 'game_action_performed') {
-          final playerName = _pokerGame.players[_pokerGame.currentPlayerIndex].username;
-          _showTurnChangeNotification(playerName);
+        if (data['action'] == 'turn_changed' ||
+            (data['action'] == 'game_action_performed' &&
+                data['currentPlayerIndex'] != null)) {
+
+          final playerIndex = data['currentPlayerIndex'] ?? _pokerGame.currentPlayerIndex;
+          if (playerIndex < _pokerGame.players.length) {
+            final playerName = _pokerGame.players[playerIndex].username;
+            _showTurnChangeNotification(playerName);
+          }
         }
 
         // Force a refresh of the UI
         _pokerGame.notifyListeners();
       }
 
-      // Handle specific events
-      if (data['action'] == 'game_started' && !_handStarted) {
-        setState(() {
-          _pokerGame.handInProgress = true;
-          _handStarted = true;
-
-          // Force a refresh
-          _pokerGame.notifyListeners();
-        });
+      // Handle specific game action events
+      if (data['action'] == 'game_action_performed' && data['actionType'] != null) {
+        _handleGameAction(data);
       }
 
     } catch (e) {
@@ -268,7 +412,8 @@ class _PokerGameScreenState extends State<PokerGameScreen> {
 
   // Updated handleAction method for PokerGameScreen
   void _handleAction(String action, {int? amount}) async {
-    if (_gameService == null || Provider.of<UserModel>(context, listen: false).authToken == null) {
+    if (_gameService == null ||
+        Provider.of<UserModel>(context, listen: false).authToken == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Error: Service not initialized'),
@@ -297,9 +442,12 @@ class _PokerGameScreenState extends State<PokerGameScreen> {
           final updatedGame = result['game'] as GameModel;
 
           // Update our local game model
-          _pokerGame.gameModel.currentPlayerIndex = updatedGame.currentPlayerIndex;
-          _pokerGame.gameModel.pot = updatedGame.pot ?? _pokerGame.gameModel.pot;
-          _pokerGame.gameModel.currentBet = updatedGame.currentBet ?? _pokerGame.gameModel.currentBet;
+          _pokerGame.gameModel.currentPlayerIndex =
+              updatedGame.currentPlayerIndex;
+          _pokerGame.gameModel.pot =
+              updatedGame.pot ?? _pokerGame.gameModel.pot;
+          _pokerGame.gameModel.currentBet =
+              updatedGame.currentBet ?? _pokerGame.gameModel.currentBet;
 
           // Record the action in local history
           _pokerGame.performAction(action, amount: amount);
@@ -431,6 +579,24 @@ class _PokerGameScreenState extends State<PokerGameScreen> {
             onPressed: () => _refreshGameState(),
           ),
 
+          // Add Sync button in the app bar
+          IconButton(
+            icon: Icon(Icons.info_outline),
+            tooltip: 'Check connection status',
+            onPressed: () {
+              if (_gameService != null) {
+                _gameService!.checkSocketStatus(widget.game.id).then((status) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text('Connected: ${status['isConnected']}, In room: ${status['isInRoom']}'),
+                      duration: const Duration(seconds: 3),
+                    ),
+                  );
+                });
+              }
+            },
+          ),
+
           // Settings menu
           PopupMenuButton(
             icon: const Icon(Icons.more_vert),
@@ -485,6 +651,7 @@ class _PokerGameScreenState extends State<PokerGameScreen> {
               onStartNewHand: userModel.id == widget.game.hostId
                   ? _startNewHand
                   : () {},
+              gameId: widget.game.id,
             );
           },
         ),
@@ -507,10 +674,8 @@ class _PokerGameScreenState extends State<PokerGameScreen> {
                   'Game Flow:',
                   style: TextStyle(fontWeight: FontWeight.bold),
                 ),
-                Text(
-                    '1. Each player receives 2 private cards (hole cards)'),
-                Text(
-                    '2. Pre-Flop: First round of betting'),
+                Text('1. Each player receives 2 private cards (hole cards)'),
+                Text('2. Pre-Flop: First round of betting'),
                 Text(
                     '3. The Flop: 3 community cards are dealt, followed by betting'),
                 Text(
@@ -528,8 +693,7 @@ class _PokerGameScreenState extends State<PokerGameScreen> {
                     '• Check: Pass the action to the next player (only if no one has bet)'),
                 Text(
                     '• Bet/Raise: Place chips in the pot (minimum bet is the big blind)'),
-                Text(
-                    '• Call: Match the current bet to stay in the hand'),
+                Text('• Call: Match the current bet to stay in the hand'),
                 Text(
                     '• Fold: Discard your hand and forfeit any chance at the pot'),
                 SizedBox(height: 16),
@@ -538,9 +702,11 @@ class _PokerGameScreenState extends State<PokerGameScreen> {
                   style: TextStyle(fontWeight: FontWeight.bold),
                 ),
                 Text('1. Royal Flush: A, K, Q, J, 10 of the same suit'),
-                Text('2. Straight Flush: Five sequential cards of the same suit'),
+                Text(
+                    '2. Straight Flush: Five sequential cards of the same suit'),
                 Text('3. Four of a Kind: Four cards of the same rank'),
-                Text('4. Full House: Three cards of one rank and two of another'),
+                Text(
+                    '4. Full House: Three cards of one rank and two of another'),
                 Text('5. Flush: Five cards of the same suit'),
                 Text('6. Straight: Five sequential cards of mixed suits'),
                 Text('7. Three of a Kind: Three cards of the same rank'),
@@ -602,7 +768,7 @@ class _PokerGameScreenState extends State<PokerGameScreen> {
     // Navigate back to home screen
     Navigator.of(context).pushAndRemoveUntil(
       MaterialPageRoute(builder: (context) => const HomeScreen()),
-          (route) => false,
+      (route) => false,
     );
   }
 }

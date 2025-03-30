@@ -370,6 +370,31 @@ class SocketManager {
     print('Room $gameId cleared due to kick');
   }
 
+  void forceReconnect() {
+    print('Forcing socket reconnection to fix sync issues');
+
+    if (_socket != null && _authToken != null) {
+      // Keep track of current rooms before disconnecting
+      final rooms = Set<String>.from(_joinedRooms);
+
+      // Disconnect
+      _socket!.disconnect();
+
+      // Create a new connection with same auth token
+      initSocket(_authToken!, userId: _userId);
+
+      // Rejoin all the rooms
+      for (final roomId in rooms) {
+        joinGameRoom(roomId);
+      }
+
+      print('Socket reconnected and rooms rejoined');
+    }
+  }
+
+// Add getter for auth token
+  String? get authToken => _authToken;
+
   /// Check if a specific room is joined
   bool isInRoom(String roomId) {
     return _joinedRooms.contains(roomId);

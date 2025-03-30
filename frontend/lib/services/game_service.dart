@@ -111,8 +111,24 @@ class GameService {
         data['timestamp'] = DateTime.now().toIso8601String();
       }
 
-      // Pass to callback
+      // Process the event immediately
       onUpdate(data);
+
+      // Also force a UI refresh after a short delay to ensure changes are reflected
+      Future.delayed(Duration(milliseconds: 100), () {
+        if (_socketManager.isConnected) {
+          // Create a refresh event to trigger the UI update
+          final refreshEvent = {
+            'action': 'force_refresh',
+            'original_event': eventName,
+            'gameId': data['gameId'],
+            'timestamp': DateTime.now().toIso8601String()
+          };
+
+          // Pass through the handler again
+          onUpdate(refreshEvent);
+        }
+      });
     }
 
     // Listen for all the different game events with the same handler
@@ -123,15 +139,37 @@ class GameService {
     _socketManager.on('player_kicked', gameEventHandler);
     _socketManager.on('game_started', gameEventHandler);
     _socketManager.on('game_ended', gameEventHandler);
-    _socketManager.on('turn_changed', gameEventHandler); // Add specific listener for turn changes
+    _socketManager.on('turn_changed', gameEventHandler);
 
-    // Adding additional listener for any socket events that might contain game data
-    _socketManager.on('connect', (_) {
-      print('Socket connected - checking for any missed game updates');
+    // Add a dedicated refresh event handler
+    _socketManager.on('force_refresh', (data) {
+      print('Forcing UI refresh from event: ${data['original_event']}');
+      onUpdate(data);
     });
 
-    _socketManager.on('reconnect', (_) {
-      print('Socket reconnected - checking for any missed game updates');
+    // Add a request_refresh handler that gets fresh data from server
+    _socketManager.on('request_refresh', (data) {
+      print('Received refresh request from another client, refreshing game state...');
+
+      // Force a state refresh
+      if (data['gameId'] != null && _socketManager.authToken != null) {
+        getGame(data['gameId'], _socketManager.authToken!)
+            .then((result) {
+          if (result['success']) {
+            // Create a game_update event with the fresh data
+            final updateEvent = {
+              'action': 'game_update',
+              'gameId': data['gameId'],
+              'game': result['game'].toJson(),
+              'timestamp': DateTime.now().toIso8601String(),
+              'source': 'refresh_request'
+            };
+
+            // Pass through the update handler
+            onUpdate(updateEvent);
+          }
+        });
+      }
     });
 
     print('Consolidated game event listeners set up');
@@ -276,8 +314,41 @@ class GameService {
 
   // Add this method to your GameService class
   void emit(String event, dynamic data) {
-    // This method delegates to the socket manager
+    print('Emitting $event event with data: ${data.toString().substring(0, Math.min(100, data.toString().length))}...');
+
+    if (!_socketManager.isConnected) {
+      print('Socket not connected, attempting to reconnect before emitting');
+
+      // Force reconnection
+      _socketManager.forceReconnect();
+
+      // Queue the emit for after connection with multiple retries
+      for (int i = 0; i < 3; i++) {
+        Future.delayed(Duration(milliseconds: 300 * (i + 1)), () {
+          if (_socketManager.isConnected) {
+            print('Socket connected, emitting delayed event: $event (attempt ${i+1})');
+            _socketManager.emit(event, data);
+          }
+        });
+      }
+
+      return;
+    }
+
+    // Send the event to socket manager
     _socketManager.emit(event, data);
+
+    // Add retries for important events
+    if (event == 'game_action') {
+      for (int i = 0; i < 2; i++) {
+        Future.delayed(Duration(milliseconds: 150 * (i + 1)), () {
+          if (_socketManager.isConnected) {
+            print('Sending retry ${i+1} for event: $event');
+            _socketManager.emit(event, data);
+          }
+        });
+      }
+    }
   }
 
   // Notify when a player is quitting voluntarily
@@ -993,4 +1064,61 @@ class GameService {
       };
     }
   }
+
+  Future<void> resyncGameState(String gameId, String authToken) async {
+    print('Attempting to resync game state...');
+
+    // Step 1: Force socket reconnection
+    _socketManager.forceReconnect();
+
+    // Step 2: Explicit rejoin of the game room
+    _socketManager.joinGameRoom(gameId);
+
+    // Step 3: Get latest game state from server
+    await Future.delayed(Duration(milliseconds: 500));
+    final result = await getGame(gameId, authToken);
+
+    // Step 4: Broadcast a request for all clients to refresh
+    if (result['success']) {
+      _socketManager.emit('game_action', {
+        'gameId': gameId,
+        'action': 'request_refresh',
+        'timestamp': DateTime.now().toIso8601String()
+      });
+
+      print('Game state resynced successfully');
+      return;
+    }
+
+    print('Failed to resync game state');
+  }
+
+  Future<Map<String, dynamic>> checkSocketStatus(String gameId) async {
+    final socketId = _socketManager.socketId;
+    final isConnected = _socketManager.isConnected;
+    final joinedRooms = _socketManager.joinedRooms;
+
+    final status = {
+      'success': true,
+      'socketId': socketId,
+      'isConnected': isConnected,
+      'joinedRooms': joinedRooms.toList(),
+      'isInRoom': joinedRooms.contains(gameId),
+      'timestamp': DateTime.now().toIso8601String()
+    };
+
+    print('Socket status: $status');
+
+    // Attempt to emit a status check event
+    if (isConnected) {
+      _socketManager.emit('game_action', {
+        'gameId': gameId,
+        'action': 'status_check',
+        'timestamp': DateTime.now().toIso8601String()
+      });
+    }
+
+    return status;
+  }
+
 }

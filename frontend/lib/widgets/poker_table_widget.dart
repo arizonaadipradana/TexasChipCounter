@@ -1,8 +1,11 @@
 import 'dart:math' as Math;
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import '../main.dart';
 import '../models/game_model.dart';
 import '../models/poker_game_model.dart';
+import '../models/user_model.dart';
+import '../services/game_service.dart';
 import 'card_widget.dart';
 
 class PokerTableWidget extends StatefulWidget {
@@ -10,6 +13,8 @@ class PokerTableWidget extends StatefulWidget {
   final String currentUserId;
   final Function(String, {int? amount}) onAction;
   final VoidCallback onStartNewHand;
+  final GameService? gameService; // Add this
+  final String gameId; // Add this
 
   const PokerTableWidget({
     Key? key,
@@ -17,6 +22,8 @@ class PokerTableWidget extends StatefulWidget {
     required this.currentUserId,
     required this.onAction,
     required this.onStartNewHand,
+    this.gameService, // Optional parameter
+    required this.gameId, // Required parameter
   }) : super(key: key);
 
   @override
@@ -176,6 +183,30 @@ class _PokerTableWidgetState extends State<PokerTableWidget> {
                 right: 0,
                 child: _buildActionButtons(),
               ),
+            Positioned(
+              top: 8,
+              left: 8,
+              child: IconButton(
+                icon: const Icon(
+                  Icons.sync,
+                  color: Colors.white,
+                ),
+                onPressed: () {
+                  // Call the resync method
+                  final userModel = Provider.of<UserModel>(context, listen: false);
+                  if (userModel.authToken != null && widget.gameService != null) {
+                    widget.gameService?.resyncGameState(widget.gameId, userModel.authToken!);
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('Syncing game state...'),
+                        duration: Duration(seconds: 1),
+                      ),
+                    );
+                  }
+                },
+                tooltip: 'Sync game state',
+              ),
+            ),
 
             // Start new hand button
             if (!widget.gameModel.handInProgress)
