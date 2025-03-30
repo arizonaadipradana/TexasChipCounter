@@ -64,34 +64,45 @@ class _PokerTableWidgetState extends State<PokerTableWidget> {
         widget.gameModel.handInProgress) {
       _lastPlayerIndex = widget.gameModel.currentPlayerIndex;
 
-      // If turn has changed, show a notification
+      // If turn has changed, ensure UI updates
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (widget.gameModel.players.isNotEmpty &&
-            widget.gameModel.currentPlayerIndex <
-                widget.gameModel.players.length) {
-          final playerName = widget.gameModel.players[widget.gameModel
-              .currentPlayerIndex].username;
-          final isCurrentUserTurn = widget.gameModel.players[widget.gameModel.currentPlayerIndex].userId == widget.currentUserId;
+        // This is crucial - force a UI update whenever the current player changes
+        _updateUI();
+      });
+    }
 
-          // Only show the notification if we're not already showing one for this turn
-          if (_lastAction != 'turn_${widget.gameModel.currentPlayerIndex}') {
-            _lastAction = 'turn_${widget.gameModel.currentPlayerIndex}';
+    // Also check if any player data has changed
+    bool playerDataChanged = false;
 
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text(isCurrentUserTurn
-                    ? 'It\'s your turn now!'
-                    : 'It\'s $playerName\'s turn now'),
-                duration: const Duration(seconds: 2),
-                behavior: SnackBarBehavior.floating,
-                backgroundColor: isCurrentUserTurn ? Colors.green : Colors.blue,
-              ),
-            );
+    if (oldWidget.gameModel.players.length == widget.gameModel.players.length) {
+      for (int i = 0; i < oldWidget.gameModel.players.length; i++) {
+        final oldPlayer = oldWidget.gameModel.players[i];
+        final newPlayer = widget.gameModel.players[i];
 
-            // Call _updateUI to refresh the table state
-            _updateUI();
-          }
+        // Check for changes in chip balance, current bet, or folded status
+        if (oldPlayer.chipBalance != newPlayer.chipBalance ||
+            oldPlayer.currentBet != newPlayer.currentBet ||
+            oldPlayer.hasFolded != newPlayer.hasFolded) {
+          playerDataChanged = true;
+          break;
         }
+      }
+    } else {
+      // Player count changed
+      playerDataChanged = true;
+    }
+
+    // If player data changed, update UI
+    if (playerDataChanged) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _updateUI();
+      });
+    }
+
+    // If pot amount changed, update UI
+    if (oldWidget.gameModel.pot != widget.gameModel.pot) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _updateUI();
       });
     }
 
@@ -100,14 +111,6 @@ class _PokerTableWidgetState extends State<PokerTableWidget> {
         widget.gameModel.actionHistory.length) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _scrollToHistoryEnd();
-      });
-    }
-
-    // Force rebuild the UI whenever the current player changes
-    if (oldWidget.gameModel.currentPlayerIndex != widget.gameModel.currentPlayerIndex) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        // Use _updateUI to trigger a rebuild of the table
-        _updateUI();
       });
     }
   }
@@ -270,169 +273,209 @@ class _PokerTableWidgetState extends State<PokerTableWidget> {
     );
   }
 
-  Widget _buildPlayerCard(PokerPlayer player, Map<String, double> position, bool isCurrentPlayer) {
-    final isCurrentUser = player.userId == widget.currentUserId;
+  Widget _buildPlayerCard(PokerPlayer player, bool isCurrentPlayer, bool isCurrentUser) {
     final isDealerButton = player == widget.gameModel.dealer;
     final isSmallBlind = player == widget.gameModel.smallBlind;
     final isBigBlind = player == widget.gameModel.bigBlind;
 
     // Calculate animation values for visual cues
-    final double glowIntensity = isCurrentPlayer ? 0.8 : 0.0;
-    final double scaleFactor = isCurrentPlayer ? 1.05 : 1.0;
+    final Color backgroundColor = isCurrentPlayer
+        ? Colors.blue.withOpacity(0.9)
+        : Colors.black.withOpacity(0.7);
 
-    return Positioned(
-      left: position['left'],
-      top: position['top'],
-      child: AnimatedContainer(
-        duration: Duration(milliseconds: 300),
-        curve: Curves.easeInOut,
-        transform: Matrix4.identity()..scale(scaleFactor),
-        decoration: BoxDecoration(
-          color: isCurrentPlayer
-              ? Colors.blue.withOpacity(0.8)
-              : Colors.black.withOpacity(0.7),
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(
-            color: isCurrentUser ? Colors.yellow : Colors.white,
-            width: isCurrentUser ? 3 : 1,
-          ),
-          boxShadow: isCurrentPlayer ? [
-            BoxShadow(
-              color: Colors.blue.withOpacity(glowIntensity),
-              blurRadius: 10,
-              spreadRadius: 3,
-            )
-          ] : null,
+    final Color borderColor = isCurrentUser
+        ? Colors.yellow
+        : isCurrentPlayer
+        ? Colors.green
+        : Colors.white;
+
+    final double borderWidth = isCurrentUser
+        ? 3
+        : isCurrentPlayer
+        ? 2
+        : 1;
+
+    return Container(
+      width: 160,
+      decoration: BoxDecoration(
+        color: backgroundColor,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: borderColor,
+          width: borderWidth,
         ),
-        padding: const EdgeInsets.all(8),
-        width: 160,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // Player name and chips
-            Text(
-              player.username,
-              style: TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.bold,
-                fontSize: isCurrentUser ? 16 : 14,
-              ),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-            Text(
-              '${player.chipBalance} chips',
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 12,
-              ),
-            ),
-
-            const SizedBox(height: 4),
-
-            // Player status badges
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (isDealerButton)
-                  _buildStatusBadge(
-                    'D',
-                    Colors.white,
-                    Colors.black,
-                  ),
-                if (isSmallBlind)
-                  _buildStatusBadge(
-                    'SB',
-                    Colors.blue.shade300,
-                    Colors.black,
-                  ),
-                if (isBigBlind)
-                  _buildStatusBadge(
-                    'BB',
-                    Colors.orange.shade300,
-                    Colors.black,
-                  ),
-                if (player.hasFolded)
-                  _buildStatusBadge(
-                    'Fold',
-                    Colors.red,
-                    Colors.white,
-                  ),
-                if (player.isAllIn)
-                  _buildStatusBadge(
-                    'All-In',
-                    Colors.purple,
-                    Colors.white,
-                  ),
-                if (isCurrentPlayer)
-                  _buildStatusBadge(
-                    'Turn',
-                    Colors.green,
-                    Colors.white,
-                  ),
-              ],
-            ),
-
-            const SizedBox(height: 8),
-
-            // Player's current bet
-            if (player.currentBet > 0)
-              Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 8,
-                  vertical: 2,
-                ),
-                decoration: BoxDecoration(
-                  color: Colors.amber,
-                  borderRadius: BorderRadius.circular(12),
-                ),
+        boxShadow: isCurrentPlayer ? [
+          BoxShadow(
+            color: Colors.green.withOpacity(0.6),
+            blurRadius: 10,
+            spreadRadius: 3,
+          )
+        ] : null,
+      ),
+      padding: const EdgeInsets.all(8),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // Player name with turn indicator
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              if (isCurrentPlayer)
+                Icon(Icons.arrow_right, color: Colors.white, size: 20),
+              Flexible(
                 child: Text(
-                  'Bet: ${player.currentBet}',
-                  style: const TextStyle(
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ),
-
-            const SizedBox(height: 8),
-
-            // Player's hole cards
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                // Card code remains the same...
-              ],
-            ),
-
-            // Player's hand evaluation at showdown
-            if (widget.gameModel.currentRound == BettingRound.showdown &&
-                !player.hasFolded &&
-                player.handEvaluation != null)
-              Container(
-                margin: const EdgeInsets.only(top: 4),
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 8,
-                  vertical: 2,
-                ),
-                decoration: BoxDecoration(
-                  color: widget.gameModel.winners.contains(player)
-                      ? Colors.amber
-                      : Colors.white,
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Text(
-                  player.handEvaluation!.displayName,
+                  player.username,
                   style: TextStyle(
-                    color: widget.gameModel.winners.contains(player)
-                        ? Colors.black
-                        : Colors.grey.shade700,
+                    color: Colors.white,
                     fontWeight: FontWeight.bold,
-                    fontSize: 12,
+                    fontSize: isCurrentUser ? 16 : 14,
                   ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                 ),
               ),
-          ],
-        ),
+              if (isCurrentPlayer)
+                Icon(Icons.arrow_left, color: Colors.white, size: 20),
+            ],
+          ),
+
+          // Chip balance
+          Text(
+            '${player.chipBalance} chips',
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 12,
+            ),
+          ),
+
+          const SizedBox(height: 4),
+
+          // Player status badges
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (isDealerButton)
+                _buildStatusBadge(
+                  'D',
+                  Colors.white,
+                  Colors.black,
+                ),
+              if (isSmallBlind)
+                _buildStatusBadge(
+                  'SB',
+                  Colors.blue.shade300,
+                  Colors.black,
+                ),
+              if (isBigBlind)
+                _buildStatusBadge(
+                  'BB',
+                  Colors.orange.shade300,
+                  Colors.black,
+                ),
+              if (player.hasFolded)
+                _buildStatusBadge(
+                  'Fold',
+                  Colors.red,
+                  Colors.white,
+                ),
+              if (player.isAllIn)
+                _buildStatusBadge(
+                  'All-In',
+                  Colors.purple,
+                  Colors.white,
+                ),
+              if (isCurrentPlayer)
+                _buildStatusBadge(
+                  'TURN',
+                  Colors.green,
+                  Colors.white,
+                ),
+            ],
+          ),
+
+          const SizedBox(height: 8),
+
+          // Player's current bet with animation for changes
+          if (player.currentBet > 0)
+            TweenAnimationBuilder<double>(
+              tween: Tween<double>(begin: 0.8, end: 1.0),
+              duration: Duration(milliseconds: 500),
+              curve: Curves.elasticOut,
+              builder: (context, value, child) {
+                return Transform.scale(
+                  scale: value,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 2,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.amber,
+                      borderRadius: BorderRadius.circular(12),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.amber.withOpacity(0.5),
+                          blurRadius: 4,
+                          spreadRadius: 1,
+                        )
+                      ],
+                    ),
+                    child: Text(
+                      'Bet: ${player.currentBet}',
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                );
+              },
+            ),
+
+          const SizedBox(height: 8),
+
+          // Player's hole cards
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Card content remains the same
+            ],
+          ),
+
+          // Hand evaluation at showdown
+          if (widget.gameModel.currentRound == BettingRound.showdown &&
+              !player.hasFolded &&
+              player.handEvaluation != null)
+            Container(
+              margin: const EdgeInsets.only(top: 4),
+              padding: const EdgeInsets.symmetric(
+                horizontal: 8,
+                vertical: 2,
+              ),
+              decoration: BoxDecoration(
+                color: widget.gameModel.winners.contains(player)
+                    ? Colors.amber
+                    : Colors.white,
+                borderRadius: BorderRadius.circular(12),
+                boxShadow: widget.gameModel.winners.contains(player) ? [
+                  BoxShadow(
+                    color: Colors.amber.withOpacity(0.7),
+                    blurRadius: 8,
+                    spreadRadius: 2,
+                  )
+                ] : null,
+              ),
+              child: Text(
+                player.handEvaluation!.displayName,
+                style: TextStyle(
+                  color: widget.gameModel.winners.contains(player)
+                      ? Colors.black
+                      : Colors.grey.shade700,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 12,
+                ),
+              ),
+            ),
+        ],
       ),
     );
   }
@@ -442,29 +485,121 @@ class _PokerTableWidgetState extends State<PokerTableWidget> {
     final cards = widget.gameModel.communityCards;
     final placeholders = 5 - cards.length;
 
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        ...cards.map(
-              (card) =>
-              PlayingCardWidget(
-                card: card,
-                height: 100,
-                width: 70,
+    return AnimatedContainer(
+      duration: Duration(milliseconds: 500),
+      curve: Curves.easeInOut,
+      decoration: BoxDecoration(
+        color: Colors.black.withOpacity(0.3),
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.2),
+            blurRadius: 8,
+            spreadRadius: 2,
+          )
+        ],
+      ),
+      padding: EdgeInsets.all(8),
+      child: Column(
+        children: [
+          // Betting round indicator
+          if (widget.gameModel.handInProgress)
+            Container(
+              padding: EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+              decoration: BoxDecoration(
+                color: Colors.black.withOpacity(0.6),
+                borderRadius: BorderRadius.circular(12),
               ),
-        ),
-        ...List.generate(
-          placeholders,
-              (index) =>
-              PlayingCardWidget(
-                card: null,
-                height: 100,
-                width: 70,
-                faceDown: false,
-                showShadow: false,
+              margin: EdgeInsets.only(bottom: 8),
+              child: Text(
+                widget.gameModel.currentRoundName,
+                style: TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
+                ),
               ),
-        ),
-      ],
+            ),
+
+          // Cards
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ...cards.map(
+                    (card) => Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 2),
+                  child: PlayingCardWidget(
+                    card: card,
+                    height: 100,
+                    width: 70,
+                  ),
+                ),
+              ),
+              ...List.generate(
+                placeholders,
+                    (index) => Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 2),
+                  child: PlayingCardWidget(
+                    card: null,
+                    height: 100,
+                    width: 70,
+                    faceDown: false,
+                    showShadow: false,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPotDisplay() {
+    return TweenAnimationBuilder<double>(
+      tween: Tween<double>(begin: 0.9, end: 1.0),
+      duration: Duration(milliseconds: 500),
+      curve: Curves.elasticOut,
+      builder: (context, value, child) {
+        return Transform.scale(
+          scale: value,
+          child: Container(
+            padding: const EdgeInsets.symmetric(
+              horizontal: 16,
+              vertical: 8,
+            ),
+            decoration: BoxDecoration(
+              color: Colors.green.shade900,
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(
+                color: Colors.amber,
+                width: 2,
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.4),
+                  blurRadius: 8,
+                  spreadRadius: 2,
+                )
+              ],
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.monetization_on, color: Colors.amber),
+                SizedBox(width: 8),
+                Text(
+                  'Pot: ${widget.gameModel.pot} chips',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 18,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 
@@ -491,9 +626,13 @@ class _PokerTableWidgetState extends State<PokerTableWidget> {
         if (widget.gameModel.players.isNotEmpty &&
             widget.gameModel.currentPlayerIndex <
                 widget.gameModel.players.length) {
-          stateText =
-          '${widget.gameModel.currentRoundName} - ${widget.gameModel
-              .currentPlayer.username}\'s turn';
+
+          final currentPlayerId = widget.gameModel.currentPlayer.userId;
+          final isCurrentUserTurn = currentPlayerId == widget.currentUserId;
+
+          stateText = isCurrentUserTurn
+              ? 'YOUR TURN!'
+              : '${widget.gameModel.currentRoundName} - ${widget.gameModel.currentPlayer.username}\'s turn';
         } else {
           stateText = widget.gameModel.currentRoundName;
         }
@@ -514,8 +653,8 @@ class _PokerTableWidgetState extends State<PokerTableWidget> {
       ),
       child: Text(
         stateText,
-        style: const TextStyle(
-          color: Colors.white,
+        style: TextStyle(
+          color: stateText.contains('YOUR TURN') ? Colors.yellow : Colors.white,
           fontWeight: FontWeight.bold,
           fontSize: 16,
         ),
@@ -538,8 +677,32 @@ class _PokerTableWidgetState extends State<PokerTableWidget> {
       final isCurrentPlayer =
           widget.gameModel.handInProgress &&
               index == widget.gameModel.currentPlayerIndex;
+      final isCurrentUser = player.userId == widget.currentUserId;
 
-      return _buildPlayerCard(player, position, isCurrentPlayer);
+      // Add a pulsing animation for current player
+      Widget playerWidget = _buildPlayerCard(player, isCurrentPlayer, isCurrentUser);
+
+      if (isCurrentPlayer) {
+        // Wrap in animated container for current player
+        playerWidget = TweenAnimationBuilder<double>(
+          tween: Tween<double>(begin: 0.95, end: 1.05),
+          duration: Duration(milliseconds: 1000),
+          curve: Curves.easeInOut,
+          builder: (context, value, child) {
+            return Transform.scale(
+              scale: value,
+              child: child,
+            );
+          },
+          child: playerWidget,
+        );
+      }
+
+      return Positioned(
+        left: position['left'],
+        top: position['top'],
+        child: playerWidget,
+      );
     });
   }
 
@@ -627,6 +790,17 @@ class _PokerTableWidgetState extends State<PokerTableWidget> {
       decoration: BoxDecoration(
         color: Colors.black.withOpacity(0.8),
         borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: Colors.blue.shade700,
+          width: 2,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.5),
+            blurRadius: 10,
+            spreadRadius: 3,
+          )
+        ],
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -663,8 +837,19 @@ class _PokerTableWidgetState extends State<PokerTableWidget> {
                 onPressed: () => widget.onAction('fold'),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.red,
+                  padding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  elevation: 5,
                 ),
-                child: const Text('Fold'),
+                child: Row(
+                  children: [
+                    Icon(Icons.close),
+                    SizedBox(width: 4),
+                    const Text('Fold'),
+                  ],
+                ),
               ),
 
               const SizedBox(width: 8),
@@ -678,12 +863,23 @@ class _PokerTableWidgetState extends State<PokerTableWidget> {
                     : null,
                 style: ElevatedButton.styleFrom(
                   backgroundColor: canCheck ? Colors.green : Colors.blue,
+                  padding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  elevation: 5,
                 ),
-                child: Text(canCheck
-                    ? 'Check'
-                    : callAmount > 0
-                    ? 'Call $callAmount'
-                    : 'Call'),
+                child: Row(
+                  children: [
+                    Icon(canCheck ? Icons.check : Icons.call),
+                    SizedBox(width: 4),
+                    Text(canCheck
+                        ? 'Check'
+                        : callAmount > 0
+                        ? 'Call $callAmount'
+                        : 'Call'),
+                  ],
+                ),
               ),
 
               const SizedBox(width: 8),
@@ -693,8 +889,19 @@ class _PokerTableWidgetState extends State<PokerTableWidget> {
                 onPressed: canRaise ? () => _showRaiseDialog() : null,
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.amber,
+                  padding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  elevation: 5,
                 ),
-                child: Text(widget.gameModel.currentBet > 0 ? 'Raise' : 'Bet'),
+                child: Row(
+                  children: [
+                    Icon(Icons.arrow_upward),
+                    SizedBox(width: 4),
+                    Text(widget.gameModel.currentBet > 0 ? 'Raise' : 'Bet'),
+                  ],
+                ),
               ),
             ],
           ),
@@ -1060,7 +1267,16 @@ class _PokerTableWidgetState extends State<PokerTableWidget> {
 
       // Force the game model to notify listeners
       widget.gameModel.notifyListeners();
+
+      // Add a subtle animation effect to highlight the change
+      _animateTableChange();
     }
+  }
+
+  void _animateTableChange() {
+    // We'll use a very subtle animation just to draw attention to the fact
+    // that the state has changed - implemented in the widget tree with
+    // AnimatedContainer
   }
 
   void updateTable() {

@@ -66,7 +66,7 @@ class _ActiveGameScreenState extends State<ActiveGameScreen> {
 
     // IMPORTANT: Listen for all updates BEFORE setting up specific handlers
     // to avoid socket disconnect issues
-    _gameService?.listenForAllGameUpdates(_handleAnyGameEvent);
+    _gameService?.listenForAllGameUpdates(widget.game.id, _handleAnyGameEvent);
 
     // Set up periodic state refresh to ensure consistency
     // This acts as a fallback in case any real-time events are missed
