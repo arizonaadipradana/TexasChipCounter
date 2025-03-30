@@ -1,10 +1,12 @@
 import 'dart:math' as Math;
 import 'package:flutter/material.dart';
+import '../main.dart';
 import '../models/card_model.dart' as poker;
+import '../models/game_model.dart';
 import '../models/poker_game_model.dart';
 import 'card_widget.dart';
 
-class PokerTableWidget extends StatelessWidget {
+class PokerTableWidget extends StatefulWidget {
   final PokerGameModel gameModel;
   final String currentUserId;
   final Function(String, {int? amount}) onAction;
@@ -19,7 +21,34 @@ class PokerTableWidget extends StatelessWidget {
   }) : super(key: key);
 
   @override
+  State<PokerTableWidget> createState() => _PokerTableWidgetState();
+}
+
+class _PokerTableWidgetState extends State<PokerTableWidget> {
+  int _lastPlayerIndex = -1;
+
+  @override
   Widget build(BuildContext context) {
+    // Check if player turn has changed
+    if (_lastPlayerIndex != widget.gameModel.currentPlayerIndex) {
+      _lastPlayerIndex = widget.gameModel.currentPlayerIndex;
+
+      // If turn has changed, show a notification
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (widget.gameModel.players.isNotEmpty &&
+            widget.gameModel.currentPlayerIndex < widget.gameModel.players.length) {
+          final playerName = widget.gameModel.players[widget.gameModel.currentPlayerIndex].username;
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('It\'s $playerName\'s turn now'),
+              duration: const Duration(seconds: 1),
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        }
+      });
+    }
+
     return LayoutBuilder(
       builder: (context, constraints) {
         final maxWidth = constraints.maxWidth;
@@ -64,7 +93,7 @@ class PokerTableWidget extends StatelessWidget {
                           borderRadius: BorderRadius.circular(20),
                         ),
                         child: Text(
-                          'Pot: ${gameModel.pot} chips',
+                          'Pot: ${widget.gameModel.pot} chips',
                           style: const TextStyle(
                             color: Colors.white,
                             fontWeight: FontWeight.bold,
@@ -92,9 +121,11 @@ class PokerTableWidget extends StatelessWidget {
             ..._positionPlayers(maxWidth, maxHeight),
 
             // Action buttons
-            if (gameModel.handInProgress &&
-                gameModel.currentPlayer.userId == currentUserId &&
-                gameModel.currentRound != BettingRound.showdown)
+            if (widget.gameModel.handInProgress &&
+                widget.gameModel.players.isNotEmpty &&
+                widget.gameModel.currentPlayerIndex < widget.gameModel.players.length &&
+                widget.gameModel.currentPlayer.userId == widget.currentUserId &&
+                widget.gameModel.currentRound != BettingRound.showdown)
               Positioned(
                 bottom: 16,
                 left: 0,
@@ -103,14 +134,14 @@ class PokerTableWidget extends StatelessWidget {
               ),
 
             // Start new hand button
-            if (!gameModel.handInProgress)
+            if (!widget.gameModel.handInProgress)
               Positioned(
                 bottom: 16,
                 left: 0,
                 right: 0,
                 child: Center(
                   child: ElevatedButton(
-                    onPressed: onStartNewHand,
+                    onPressed: widget.onStartNewHand,
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.blue,
                       padding: const EdgeInsets.symmetric(
@@ -151,7 +182,7 @@ class PokerTableWidget extends StatelessWidget {
 
   // Build the community cards display
   Widget _buildCommunityCards() {
-    final cards = gameModel.communityCards;
+    final cards = widget.gameModel.communityCards;
     final placeholders = 5 - cards.length;
 
     return Row(
@@ -182,23 +213,32 @@ class PokerTableWidget extends StatelessWidget {
   Widget _buildGameInfo() {
     String stateText = 'Waiting for players...';
 
-    if (gameModel.handInProgress) {
-      if (gameModel.currentRound == BettingRound.showdown) {
-        if (gameModel.winners.isNotEmpty) {
-          if (gameModel.winners.length == 1) {
+    if (widget.gameModel.handInProgress) {
+      if (widget.gameModel.currentRound == BettingRound.showdown) {
+        if (widget.gameModel.winners.isNotEmpty) {
+          if (widget.gameModel.winners.length == 1) {
             stateText =
-            '${gameModel.winners[0].username} wins!';
+            '${widget.gameModel.winners[0].username} wins!';
           } else {
-            final names = gameModel.winners.map((p) => p.username).join(', ');
+            final names = widget.gameModel.winners.map((p) => p.username).join(', ');
             stateText = 'Split pot! Winners: $names';
           }
         } else {
           stateText = 'Showdown!';
         }
       } else {
-        stateText =
-        '${gameModel.currentRoundName} - ${gameModel.currentPlayer.username}\'s turn';
+        // Make sure we have a current player before trying to access username
+        if (widget.gameModel.players.isNotEmpty &&
+            widget.gameModel.currentPlayerIndex < widget.gameModel.players.length) {
+          stateText =
+          '${widget.gameModel.currentRoundName} - ${widget.gameModel.currentPlayer.username}\'s turn';
+        } else {
+          stateText = widget.gameModel.currentRoundName;
+        }
       }
+    } else if (widget.gameModel.gameModel.status == GameStatus.active) {
+      // Game is active but hand not in progress
+      stateText = 'Starting game...';
     }
 
     return Container(
@@ -223,7 +263,7 @@ class PokerTableWidget extends StatelessWidget {
 
   // Position players around the table
   List<Widget> _positionPlayers(double maxWidth, double maxHeight) {
-    final players = gameModel.players;
+    final players = widget.gameModel.players;
     final positions = _calculatePlayerPositions(
       players.length,
       maxWidth,
@@ -233,12 +273,12 @@ class PokerTableWidget extends StatelessWidget {
     return List.generate(players.length, (index) {
       final player = players[index];
       final position = positions[index];
-      final isCurrentUser = player.userId == currentUserId;
+      final isCurrentUser = player.userId == widget.currentUserId;
       final isCurrentPlayer =
-          gameModel.handInProgress && index == gameModel.currentPlayerIndex;
-      final isDealerButton = index == gameModel.dealerPosition;
-      final isSmallBlind = index == gameModel.smallBlindPosition;
-      final isBigBlind = index == gameModel.bigBlindPosition;
+          widget.gameModel.handInProgress && index == widget.gameModel.currentPlayerIndex;
+      final isDealerButton = index == widget.gameModel.dealerPosition;
+      final isSmallBlind = index == widget.gameModel.smallBlindPosition;
+      final isBigBlind = index == widget.gameModel.bigBlindPosition;
 
       return Positioned(
         left: position['left'],
@@ -347,20 +387,20 @@ class PokerTableWidget extends StatelessWidget {
                   // First card
                   if (player.holeCards.isNotEmpty)
                     PlayingCardWidget(
-                      card: isCurrentUser || gameModel.currentRound == BettingRound.showdown && !player.hasFolded
+                      card: isCurrentUser || widget.gameModel.currentRound == BettingRound.showdown && !player.hasFolded
                           ? player.holeCards[0]
                           : null,
-                      faceDown: !isCurrentUser && gameModel.currentRound != BettingRound.showdown,
+                      faceDown: !isCurrentUser && widget.gameModel.currentRound != BettingRound.showdown,
                       height: 70,
                       width: 50,
                     ),
                   // Second card
                   if (player.holeCards.length > 1)
                     PlayingCardWidget(
-                      card: isCurrentUser || gameModel.currentRound == BettingRound.showdown && !player.hasFolded
+                      card: isCurrentUser || widget.gameModel.currentRound == BettingRound.showdown && !player.hasFolded
                           ? player.holeCards[1]
                           : null,
-                      faceDown: !isCurrentUser && gameModel.currentRound != BettingRound.showdown,
+                      faceDown: !isCurrentUser && widget.gameModel.currentRound != BettingRound.showdown,
                       height: 70,
                       width: 50,
                     ),
@@ -368,7 +408,7 @@ class PokerTableWidget extends StatelessWidget {
               ),
 
               // Player's hand evaluation at showdown
-              if (gameModel.currentRound == BettingRound.showdown &&
+              if (widget.gameModel.currentRound == BettingRound.showdown &&
                   !player.hasFolded &&
                   player.handEvaluation != null)
                 Container(
@@ -378,7 +418,7 @@ class PokerTableWidget extends StatelessWidget {
                     vertical: 2,
                   ),
                   decoration: BoxDecoration(
-                    color: gameModel.winners.contains(player)
+                    color: widget.gameModel.winners.contains(player)
                         ? Colors.amber
                         : Colors.white,
                     borderRadius: BorderRadius.circular(12),
@@ -386,7 +426,7 @@ class PokerTableWidget extends StatelessWidget {
                   child: Text(
                     player.handEvaluation!.displayName,
                     style: TextStyle(
-                      color: gameModel.winners.contains(player)
+                      color: widget.gameModel.winners.contains(player)
                           ? Colors.black
                           : Colors.grey.shade700,
                       fontWeight: FontWeight.bold,
@@ -470,10 +510,10 @@ class PokerTableWidget extends StatelessWidget {
 
   // Build action buttons
   Widget _buildActionButtons() {
-    final player = gameModel.currentPlayer;
-    final canCheck = gameModel.canCheck();
-    final callAmount = gameModel.callAmount();
-    final minRaise = gameModel.minimumRaiseAmount();
+    final player = widget.gameModel.currentPlayer;
+    final canCheck = widget.gameModel.canCheck();
+    final callAmount = widget.gameModel.callAmount();
+    final minRaise = widget.gameModel.minimumRaiseAmount();
     final bool canRaise = player.chipBalance >= minRaise;
 
     return Container(
@@ -487,7 +527,7 @@ class PokerTableWidget extends StatelessWidget {
         children: [
           // Fold button
           ElevatedButton(
-            onPressed: () => onAction('fold'),
+            onPressed: () => widget.onAction('fold'),
             style: ElevatedButton.styleFrom(
               backgroundColor: Colors.red,
             ),
@@ -499,9 +539,9 @@ class PokerTableWidget extends StatelessWidget {
           // Check or Call button
           ElevatedButton(
             onPressed: canCheck
-                ? () => onAction('check')
+                ? () => widget.onAction('check')
                 : callAmount > 0
-                ? () => onAction('call')
+                ? () => widget.onAction('call')
                 : null,
             style: ElevatedButton.styleFrom(
               backgroundColor: canCheck ? Colors.green : Colors.blue,
@@ -521,25 +561,38 @@ class PokerTableWidget extends StatelessWidget {
             style: ElevatedButton.styleFrom(
               backgroundColor: Colors.amber,
             ),
-            child: Text(gameModel.currentBet > 0 ? 'Raise' : 'Bet'),
+            child: Text(widget.gameModel.currentBet > 0 ? 'Raise' : 'Bet'),
           ),
         ],
       ),
     );
   }
 
-  // Show dialog to select raise amount
+  // Fix for the _showRaiseDialog method
   void _showRaiseDialog() {
     final TextEditingController raiseController = TextEditingController();
-    final player = gameModel.currentPlayer;
-    final minRaise = gameModel.minimumRaiseAmount();
+    final player = widget.gameModel.currentPlayer;
+    final minRaise = widget.gameModel.minimumRaiseAmount();
     final maxRaise = player.chipBalance;
 
+    // Set initial value to minimum raise
+    raiseController.text = minRaise.toString();
+
+    // Make sure we have a valid context before showing dialog
+    final BuildContext? dialogContext =
+        GlobalObjectKey(widget.gameModel).currentContext ??
+            navigatorKey.currentContext;
+
+    if (dialogContext == null) {
+      print('Cannot show raise dialog: No valid context available');
+      return;
+    }
+
     showDialog(
-      context: GlobalObjectKey(gameModel).currentContext!,
+      context: dialogContext,
       builder: (context) {
         return AlertDialog(
-          title: Text(gameModel.currentBet > 0 ? 'Raise Amount' : 'Bet Amount'),
+          title: Text(widget.gameModel.currentBet > 0 ? 'Raise Amount' : 'Bet Amount'),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -586,13 +639,13 @@ class PokerTableWidget extends StatelessWidget {
                 final raiseAmount = int.tryParse(raiseController.text);
                 if (raiseAmount != null && raiseAmount >= minRaise && raiseAmount <= maxRaise) {
                   Navigator.of(context).pop();
-                  onAction(
-                    gameModel.currentBet > 0 ? 'raise' : 'bet',
+                  widget.onAction(
+                    widget.gameModel.currentBet > 0 ? 'raise' : 'bet',
                     amount: raiseAmount,
                   );
                 }
               },
-              child: Text(gameModel.currentBet > 0 ? 'Raise' : 'Bet'),
+              child: Text(widget.gameModel.currentBet > 0 ? 'Raise' : 'Bet'),
             ),
           ],
         );
@@ -624,9 +677,9 @@ class PokerTableWidget extends StatelessWidget {
             width: double.maxFinite,
             height: 300,
             child: ListView.builder(
-              itemCount: gameModel.actionHistory.length,
+              itemCount: widget.gameModel.actionHistory.length,
               itemBuilder: (context, index) {
-                final action = gameModel.actionHistory[index];
+                final action = widget.gameModel.actionHistory[index];
                 final username = action['player'] ?? 'Dealer';
                 final actionText = action['action'];
                 final amount = action['amount'];

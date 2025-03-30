@@ -6,6 +6,8 @@ import 'screens/login_screen.dart';
 import 'screens/home_screen.dart';
 import 'services/auth_service.dart';
 
+final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
+
 void main() {
   runApp(
     MultiProvider(
@@ -25,6 +27,7 @@ class PokerChipCounter extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Nyanguni Kancane',
+      navigatorKey: navigatorKey, // Add the navigator key here
       theme: ThemeData(
         primarySwatch: Colors.blue,
         visualDensity: VisualDensity.adaptivePlatformDensity,

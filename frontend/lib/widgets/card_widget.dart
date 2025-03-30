@@ -23,12 +23,22 @@ class PlayingCardWidget extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Calculate responsive sizes
+    final actualWidth = width;
+    final actualHeight = height;
+    final fontSize = actualWidth * 0.25;
+
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        height: height,
-        width: width,
+        height: actualHeight,
+        width: actualWidth,
         margin: const EdgeInsets.all(2),
+        // Constrain size to avoid overflow
+        constraints: BoxConstraints(
+          maxWidth: actualWidth,
+          maxHeight: actualHeight,
+        ),
         decoration: BoxDecoration(
           color: faceDown ? Colors.blue.shade800 : Colors.white,
           borderRadius: BorderRadius.circular(6),
@@ -48,7 +58,7 @@ class PlayingCardWidget extends StatelessWidget {
         ),
         child: faceDown || card == null
             ? _buildCardBack()
-            : _buildCardFace(card!),
+            : _buildCardFace(card!, fontSize),
       ),
     );
   }
@@ -65,7 +75,7 @@ class PlayingCardWidget extends StatelessWidget {
   }
 
   // Build the face of the card
-  Widget _buildCardFace(poker.Card card) {
+  Widget _buildCardFace(poker.Card card, double fontSize) {
     final Color cardColor = card.isRed ? Colors.red : Colors.black;
 
     // Get suit symbol
@@ -113,27 +123,33 @@ class PlayingCardWidget extends StatelessWidget {
 
     return Stack(
       children: [
-        // Top left corner
+        // Top left corner - Use FittedBox to ensure text fits
         Positioned(
           top: 2,
           left: 4,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.center,
             children: [
-              Text(
-                rankSymbol,
-                style: TextStyle(
-                  color: cardColor,
-                  fontSize: width * 0.25,
-                  fontWeight: FontWeight.bold,
+              FittedBox(
+                fit: BoxFit.scaleDown,
+                child: Text(
+                  rankSymbol,
+                  style: TextStyle(
+                    color: cardColor,
+                    fontSize: fontSize,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
               ),
-              Text(
-                suitSymbol,
-                style: TextStyle(
-                  color: cardColor,
-                  fontSize: width * 0.25,
-                  height: 0.8,
+              FittedBox(
+                fit: BoxFit.scaleDown,
+                child: Text(
+                  suitSymbol,
+                  style: TextStyle(
+                    color: cardColor,
+                    fontSize: fontSize,
+                    height: 0.8,
+                  ),
                 ),
               ),
             ],
@@ -142,11 +158,14 @@ class PlayingCardWidget extends StatelessWidget {
 
         // Center suit
         Center(
-          child: Text(
-            suitSymbol,
-            style: TextStyle(
-              color: cardColor,
-              fontSize: width * 0.5,
+          child: FittedBox(
+            fit: BoxFit.scaleDown,
+            child: Text(
+              suitSymbol,
+              style: TextStyle(
+                color: cardColor,
+                fontSize: width * 0.5,
+              ),
             ),
           ),
         ),
@@ -160,20 +179,26 @@ class PlayingCardWidget extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.center,
               children: [
-                Text(
-                  rankSymbol,
-                  style: TextStyle(
-                    color: cardColor,
-                    fontSize: width * 0.25,
-                    fontWeight: FontWeight.bold,
+                FittedBox(
+                  fit: BoxFit.scaleDown,
+                  child: Text(
+                    rankSymbol,
+                    style: TextStyle(
+                      color: cardColor,
+                      fontSize: fontSize,
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
                 ),
-                Text(
-                  suitSymbol,
-                  style: TextStyle(
-                    color: cardColor,
-                    fontSize: width * 0.25,
-                    height: 0.8,
+                FittedBox(
+                  fit: BoxFit.scaleDown,
+                  child: Text(
+                    suitSymbol,
+                    style: TextStyle(
+                      color: cardColor,
+                      fontSize: fontSize,
+                      height: 0.8,
+                    ),
                   ),
                 ),
               ],

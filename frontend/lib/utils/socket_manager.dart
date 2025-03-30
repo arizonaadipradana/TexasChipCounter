@@ -1,3 +1,5 @@
+import 'dart:math' as Math;
+
 import 'package:socket_io_client/socket_io_client.dart' as io;
 import '../config/api_config.dart';
 
@@ -191,12 +193,20 @@ class SocketManager {
 
   /// Emit an event to the server with improved reliability
   void emit(String event, dynamic data) {
+    print('Emitting $event event with data: ${data.toString().substring(0, Math.min(100, data.toString().length))}...');
+
     if (_socket == null) {
       print('Socket is null, queuing event for later: $event');
       _pendingEvents.add({
         'event': event,
         'data': data,
       });
+
+      // Try to initialize socket if possible
+      if (_authToken != null) {
+        print('Attempting to initialize socket for pending event');
+        initSocket(_authToken!);
+      }
       return;
     }
 
@@ -213,16 +223,47 @@ class SocketManager {
           print('Socket connected, emitting delayed event: $event');
           _socket!.emit(event, data);
 
+          // Emit to all clients in room via broadcast too
+          if (event == 'game_action' && data['gameId'] != null) {
+            _socket!.emit('broadcast_to_room', {
+              'room': data['gameId'],
+              'event': data['action'] ?? event,
+              'data': data
+            });
+          }
+
           // Remove from pending list if it's still there
           _pendingEvents.removeWhere((e) =>
           e['event'] == event && e['data'] == data);
+        } else {
+          // Try to connect
+          if (_socket != null) {
+            _socket!.connect();
+          }
         }
       });
 
       return;
     }
 
+    // Send the event
     _socket!.emit(event, data);
+
+    // For game actions, also try to broadcast to all clients in the room
+    if (event == 'game_action' && data['gameId'] != null) {
+      _socket!.emit('broadcast_to_room', {
+        'room': data['gameId'],
+        'event': data['action'] ?? event,
+        'data': data
+      });
+
+      // Add extra debug emit to ensure everyone gets the update
+      Future.delayed(Duration(milliseconds: 300), () {
+        if (_isConnected) {
+          _socket!.emit('game_update', data);
+        }
+      });
+    }
   }
 
   /// Add event listener with tracking to prevent duplicates

@@ -264,6 +264,12 @@ class GameService {
     print('Kick notification emitted for player: $removedUserId');
   }
 
+  // Add this method to your GameService class
+  void emit(String event, dynamic data) {
+    // This method delegates to the socket manager
+    _socketManager.emit(event, data);
+  }
+
   // Notify when a player is quitting voluntarily
   void notifyPlayerQuitting(String gameId, GameModel updatedGame) {
     print('Emitting player_left event for game: $gameId');

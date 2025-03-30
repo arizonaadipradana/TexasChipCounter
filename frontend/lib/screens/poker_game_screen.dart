@@ -23,6 +23,7 @@ class _PokerGameScreenState extends State<PokerGameScreen> {
   bool _isInitializing = true;
   String _errorMessage = '';
   bool _isExiting = false;
+  bool _handStarted = false;
 
   @override
   void initState() {
@@ -70,10 +71,9 @@ class _PokerGameScreenState extends State<PokerGameScreen> {
         _isInitializing = false;
       });
 
-      // Start initial hand if player is the host
-      if (userModel.id == widget.game.hostId && !_pokerGame.handInProgress) {
-        _startNewHand();
-      }
+      // Check if game is already in progress
+      _checkGameStatus(userModel);
+
     } catch (e) {
       setState(() {
         _isInitializing = false;
@@ -82,28 +82,127 @@ class _PokerGameScreenState extends State<PokerGameScreen> {
     }
   }
 
-  // Handle game updates from the server
-  void _handleGameUpdate(dynamic data) {
-    // Implement real-time update handling logic
-    // For Phase 1, we'll use a simple state update approach
-    setState(() {
-      // Update any relevant game state based on the received data
-      // This implementation will need to be expanded based on game events
-    });
+  // Check if game is already in progress
+  void _checkGameStatus(UserModel userModel) async {
+    if (_gameService == null) return;
+
+    try {
+      final result = await _gameService!.getGame(widget.game.id, userModel.authToken!);
+      if (result['success']) {
+        final updatedGame = result['game'] as GameModel;
+
+        // If game is active, update our game state
+        if (updatedGame.status == GameStatus.active && !_handStarted) {
+          _startNewHandFromExistingGame(updatedGame);
+        }
+      }
+    } catch (e) {
+      print('Error checking game status: $e');
+    }
   }
 
-  // Start a new hand
-  void _startNewHand() {
+  // Start a new hand from existing game data
+  void _startNewHandFromExistingGame(GameModel existingGame) {
     setState(() {
-      _pokerGame.startNewHand();
+      // Update base game model
+      _pokerGame.gameModel.status = existingGame.status;
+      _pokerGame.gameModel.currentPlayerIndex = existingGame.currentPlayerIndex;
+      _pokerGame.gameModel.pot = existingGame.pot;
+      _pokerGame.gameModel.currentBet = existingGame.currentBet;
+
+      // Force pokerGame to start a hand if not already in progress
+      if (!_pokerGame.handInProgress) {
+        _pokerGame.handInProgress = true;
+        _handStarted = true;
+
+        // Ensure we have the correct number of players
+        _pokerGame.players = existingGame.players
+            .map((p) => PokerPlayer.fromPlayer(p))
+            .toList();
+      }
     });
 
     // Simulate real-time updates to other players
     _gameService?.notifyPlayerJoined(widget.game.id, _pokerGame.gameModel);
   }
 
-  // Handle player action
-  void _handleAction(String action, {int? amount}) {
+  // Handle game updates from the server
+  void _handleGameUpdate(dynamic data) {
+    if (data == null) return;
+
+    try {
+      // If game data is available, update our model
+      if (data['game'] != null) {
+        final updatedGame = GameModel.fromJson(data['game']);
+
+        setState(() {
+          // Update base game properties
+          _pokerGame.gameModel.status = updatedGame.status;
+          _pokerGame.gameModel.currentPlayerIndex = updatedGame.currentPlayerIndex;
+          _pokerGame.gameModel.pot = updatedGame.pot ?? _pokerGame.gameModel.pot;
+          _pokerGame.gameModel.currentBet = updatedGame.currentBet ?? _pokerGame.gameModel.currentBet;
+
+          // Update player data if needed
+          if (updatedGame.players.length != _pokerGame.players.length) {
+            _pokerGame.players = updatedGame.players
+                .map((p) => PokerPlayer.fromPlayer(p))
+                .toList();
+          }
+
+          // Start a hand if game is active and we haven't started yet
+          if (updatedGame.status == GameStatus.active && !_handStarted) {
+            _pokerGame.handInProgress = true;
+            _handStarted = true;
+
+            // Force a refresh of the UI
+            _pokerGame.notifyListeners();
+          }
+        });
+      }
+
+      // Handle specific events
+      if (data['action'] == 'game_started' && !_handStarted) {
+        setState(() {
+          _pokerGame.handInProgress = true;
+          _handStarted = true;
+
+          // Force a refresh
+          _pokerGame.notifyListeners();
+        });
+      }
+
+    } catch (e) {
+      print('Error handling game update: $e');
+    }
+  }
+
+  // Start a new hand
+  void _startNewHand() {
+    setState(() {
+      _pokerGame.startNewHand();
+      _handStarted = true;
+    });
+
+    // Notify other players
+    _gameService?.notifyPlayerJoined(widget.game.id, _pokerGame.gameModel);
+  }
+
+  // Updated handleAction method for PokerGameScreen
+  void _handleAction(String action, {int? amount}) async {
+    if (_gameService == null || Provider.of<UserModel>(context, listen: false).authToken == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Error: Service not initialized'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
+    final userModel = Provider.of<UserModel>(context, listen: false);
+    final userId = userModel.id;
+
+    // Update local state first
     setState(() {
       _pokerGame.performAction(action, amount: amount);
 
@@ -114,8 +213,25 @@ class _PokerGameScreenState extends State<PokerGameScreen> {
       }
     });
 
-    // Simulate real-time updates to other players
-    _gameService?.notifyPlayerJoined(widget.game.id, _pokerGame.gameModel);
+    // Create action event data
+    final actionData = {
+      'gameId': widget.game.id,
+      'action': 'game_action_performed',
+      'actionType': action,
+      'amount': amount,
+      'userId': userId,
+      'player': _pokerGame.players.firstWhere((p) => p.userId == userId).username,
+      'previousPlayerIndex': _pokerGame.currentPlayerIndex,
+      'currentPlayerIndex': (_pokerGame.currentPlayerIndex + 1) % _pokerGame.players.length,
+      'game': _pokerGame.gameModel.toJson(),
+      'timestamp': DateTime.now().toIso8601String()
+    };
+
+    // Send the action to server using socket
+    _gameService!.emit('game_action', actionData);
+
+    // Also notify all players about the game state update
+    _gameService!.notifyPlayerJoined(widget.game.id, _pokerGame.gameModel);
   }
 
   @override
@@ -194,7 +310,7 @@ class _PokerGameScreenState extends State<PokerGameScreen> {
             ),
             const SizedBox(height: 16),
             ElevatedButton(
-              onPressed: _initializeGameService,
+              onPressed: () => _initializeGameService(),
               child: const Text('Retry'),
             ),
           ],
