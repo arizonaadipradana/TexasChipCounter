@@ -5,7 +5,7 @@ import 'package:provider/provider.dart';
 import '../models/game_model.dart';
 import '../models/player_model.dart';
 import '../models/user_model.dart';
-import '../services/game_service.dart';
+import '../services/game_service_core.dart';
 import 'active_game_screen.dart';
 import 'home_screen.dart';
 

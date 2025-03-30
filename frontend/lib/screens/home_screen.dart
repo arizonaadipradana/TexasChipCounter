@@ -3,7 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../models/user_model.dart';
 import '../services/auth_service.dart';
-import '../services/game_service.dart'; // Import the game service
+import '../services/game_service_core.dart';
 import '../services/transaction_service.dart';
 import 'create_game_screen.dart';
 import 'join_game_screen.dart';
