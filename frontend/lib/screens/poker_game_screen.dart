@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -24,6 +26,7 @@ class _PokerGameScreenState extends State<PokerGameScreen> {
   String _errorMessage = '';
   bool _isExiting = false;
   bool _handStarted = false;
+  Timer? _refreshTimer; // Timer for periodic refresh
 
   @override
   void initState() {
@@ -67,6 +70,9 @@ class _PokerGameScreenState extends State<PokerGameScreen> {
       // Listen for game updates
       _gameService!.listenForAllGameUpdates(_handleGameUpdate);
 
+      // Setup periodic refresh to ensure game state stays in sync
+      _setupPeriodicRefresh();
+
       setState(() {
         _isInitializing = false;
       });
@@ -79,6 +85,52 @@ class _PokerGameScreenState extends State<PokerGameScreen> {
         _isInitializing = false;
         _errorMessage = 'Error initializing poker game: ${e.toString()}';
       });
+    }
+  }
+
+  // Setup periodic refresh to keep game state in sync
+  void _setupPeriodicRefresh() {
+    _refreshTimer?.cancel();
+    _refreshTimer = Timer.periodic(Duration(seconds: 3), (timer) {
+      if (mounted && !_isExiting) {
+        _refreshGameState(silent: true);
+      }
+    });
+  }
+
+  // Explicitly refresh game state from the server
+  Future<void> _refreshGameState({bool silent = false}) async {
+    if (_gameService == null ||
+        Provider.of<UserModel>(context, listen: false).authToken == null) {
+      return;
+    }
+
+    try {
+      final userModel = Provider.of<UserModel>(context, listen: false);
+      final result = await _gameService!.getGame(widget.game.id, userModel.authToken!);
+
+      if (result['success'] && mounted) {
+        final updatedGame = result['game'] as GameModel;
+
+        // Update the UI with the latest game state
+        setState(() {
+          // Update base game properties
+          _pokerGame.gameModel.status = updatedGame.status;
+          _pokerGame.gameModel.currentPlayerIndex = updatedGame.currentPlayerIndex;
+          _pokerGame.gameModel.pot = updatedGame.pot ?? _pokerGame.gameModel.pot;
+          _pokerGame.gameModel.currentBet = updatedGame.currentBet ?? _pokerGame.gameModel.currentBet;
+
+          // Make sure the short ID is preserved
+          if (_pokerGame.gameModel.shortId == null && updatedGame.shortId != null) {
+            _pokerGame.gameModel.shortId = updatedGame.shortId;
+          }
+
+          // Notify listeners that the game state has changed
+          _pokerGame.notifyListeners();
+        });
+      }
+    } catch (e) {
+      print('Error refreshing game state: $e');
     }
   }
 
@@ -128,12 +180,15 @@ class _PokerGameScreenState extends State<PokerGameScreen> {
 
   // Handle game updates from the server
   void _handleGameUpdate(dynamic data) {
-    if (data == null) return;
+    if (data == null || !mounted) return;
 
     try {
       // If game data is available, update our model
       if (data['game'] != null) {
         final updatedGame = GameModel.fromJson(data['game']);
+
+        // Log the updated state for debugging
+        print('Game update received: Current player index: ${updatedGame.currentPlayerIndex}, Status: ${updatedGame.status}');
 
         setState(() {
           // Update base game properties
@@ -153,11 +208,17 @@ class _PokerGameScreenState extends State<PokerGameScreen> {
           if (updatedGame.status == GameStatus.active && !_handStarted) {
             _pokerGame.handInProgress = true;
             _handStarted = true;
-
-            // Force a refresh of the UI
-            _pokerGame.notifyListeners();
           }
         });
+
+        // Show turn change notification
+        if (data['action'] == 'turn_changed' || data['action'] == 'game_action_performed') {
+          final playerName = _pokerGame.players[_pokerGame.currentPlayerIndex].username;
+          _showTurnChangeNotification(playerName);
+        }
+
+        // Force a refresh of the UI
+        _pokerGame.notifyListeners();
       }
 
       // Handle specific events
@@ -173,7 +234,25 @@ class _PokerGameScreenState extends State<PokerGameScreen> {
 
     } catch (e) {
       print('Error handling game update: $e');
+      // If we encounter an error processing the event, refresh state from server
+      _refreshGameState(silent: true);
     }
+  }
+
+  // Show notification for turn change
+  void _showTurnChangeNotification(String playerName) {
+    if (!mounted) return;
+
+    // Use WidgetsBinding to ensure the notification appears after the frame is drawn
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text("It's $playerName's turn"),
+          duration: Duration(seconds: 2),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    });
   }
 
   // Start a new hand
@@ -202,40 +281,112 @@ class _PokerGameScreenState extends State<PokerGameScreen> {
     final userModel = Provider.of<UserModel>(context, listen: false);
     final userId = userModel.id;
 
-    // Update local state first
-    setState(() {
-      _pokerGame.performAction(action, amount: amount);
+    try {
+      // Call the server API to perform the action
+      final result = await _gameService!.gameAction(
+        widget.game.id,
+        action,
+        userModel.authToken!,
+        amount: amount,
+      );
 
-      // Check if the hand is over early (everyone folded)
-      if (_pokerGame.checkForEarlyWin()) {
-        // Hand is over, nothing else to do
-        return;
+      if (result['success']) {
+        // Update local state after server confirms success
+        setState(() {
+          // Get the updated game model from the response
+          final updatedGame = result['game'] as GameModel;
+
+          // Update our local game model
+          _pokerGame.gameModel.currentPlayerIndex = updatedGame.currentPlayerIndex;
+          _pokerGame.gameModel.pot = updatedGame.pot ?? _pokerGame.gameModel.pot;
+          _pokerGame.gameModel.currentBet = updatedGame.currentBet ?? _pokerGame.gameModel.currentBet;
+
+          // Record the action in local history
+          _pokerGame.performAction(action, amount: amount);
+
+          // Check if the hand is over early (everyone folded)
+          if (_pokerGame.checkForEarlyWin()) {
+            // Hand is over, nothing else to do
+            return;
+          }
+        });
+
+        // Show a confirmation message
+        _showActionConfirmationMessage(action, amount);
+
+        // Force refresh of game state after a short delay to ensure all clients are synchronized
+        Future.delayed(Duration(milliseconds: 500), () {
+          if (mounted) {
+            _refreshGameState();
+          }
+        });
+      } else {
+        // Show error message if the action failed
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(result['message'] ?? 'Action failed'),
+            backgroundColor: Colors.red,
+          ),
+        );
       }
-    });
+    } catch (e) {
+      // Handle API errors specifically
+      String errorMessage = 'Network error occurred';
 
-    // Create action event data
-    final actionData = {
-      'gameId': widget.game.id,
-      'action': 'game_action_performed',
-      'actionType': action,
-      'amount': amount,
-      'userId': userId,
-      'player': _pokerGame.players.firstWhere((p) => p.userId == userId).username,
-      'previousPlayerIndex': _pokerGame.currentPlayerIndex,
-      'currentPlayerIndex': (_pokerGame.currentPlayerIndex + 1) % _pokerGame.players.length,
-      'game': _pokerGame.gameModel.toJson(),
-      'timestamp': DateTime.now().toIso8601String()
-    };
+      // Extract specific error message if possible
+      if (e.toString().contains('Bet amount must be at least the big blind')) {
+        errorMessage = 'Bet amount must be at least the big blind';
+      } else if (e.toString().contains('Raise must be at least')) {
+        errorMessage = 'Raise amount is too small';
+      }
 
-    // Send the action to server using socket
-    _gameService!.emit('game_action', actionData);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(errorMessage),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
 
-    // Also notify all players about the game state update
-    _gameService!.notifyPlayerJoined(widget.game.id, _pokerGame.gameModel);
+  // Show confirmation message for action
+  void _showActionConfirmationMessage(String action, int? amount) {
+    String message;
+
+    switch (action) {
+      case 'check':
+        message = 'You checked';
+        break;
+      case 'call':
+        message = 'You called ${_pokerGame.currentBet} chips';
+        break;
+      case 'raise':
+        message = 'You raised to ${amount ?? 0} chips';
+        break;
+      case 'bet':
+        message = 'You bet ${amount ?? 0} chips';
+        break;
+      case 'fold':
+        message = 'You folded';
+        break;
+      default:
+        message = 'Action completed';
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        duration: Duration(seconds: 1),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
   }
 
   @override
   void dispose() {
+    // Cancel refresh timer
+    _refreshTimer?.cancel();
+
     if (!_isExiting && _gameService != null) {
       // Leave the game room
       _gameService!.leaveGameRoom(widget.game.id);
@@ -271,6 +422,13 @@ class _PokerGameScreenState extends State<PokerGameScreen> {
                 ),
               ),
             ),
+          ),
+
+          // Refresh button
+          IconButton(
+            icon: Icon(Icons.refresh),
+            tooltip: 'Refresh game state',
+            onPressed: () => _refreshGameState(),
           ),
 
           // Settings menu

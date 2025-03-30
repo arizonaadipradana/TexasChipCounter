@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:math' as Math;
+import 'dart:async';  // Add Timer support
 import 'package:http/http.dart' as http;
 
 import '../config/api_config.dart';
@@ -10,6 +11,11 @@ import 'auth_service.dart';
 class GameService {
   // Use the singleton socket manager instead of creating a socket directly
   final SocketManager _socketManager = SocketManager();
+
+  // Throttle timers to prevent excessive API calls or emissions
+  Timer? _actionThrottleTimer;
+  Timer? _refreshThrottleTimer;
+  Timer? _emitThrottleTimer;
 
   // Map to store game ID lookups (short ID to full ID)
   static final Map<String, String> _gameIdMap = {};
@@ -83,7 +89,7 @@ class GameService {
   }
 
   // Listen for all game-related real-time updates with a single handler
-// This consolidates all event handlers to prevent socket disconnection issues
+  // This consolidates all event handlers to prevent socket disconnection issues
   void listenForAllGameUpdates(Function(dynamic) onUpdate) {
     print('Setting up consolidated game update listeners');
 
@@ -132,7 +138,7 @@ class GameService {
   }
 
   // IMPORTANT: This function clears all game-related event listeners
-// to avoid socket disconnection issues
+  // to avoid socket disconnection issues
   void _clearAllGameEventListeners() {
     // Clear listeners for all game-related events
     final gameEvents = [
@@ -178,8 +184,7 @@ class GameService {
     }
   }
 
-
-// Update the listenForPlayerUpdates method in GameService class
+  // Update the listenForPlayerUpdates method in GameService class
   void listenForPlayerUpdates(Function(GameModel) onPlayerUpdate, [Function(String, String)? onKicked]) {
     print('Setting up player update listeners with enhanced event handling');
 
@@ -240,11 +245,16 @@ class GameService {
   // Notify when a player joins
   void notifyPlayerJoined(String gameId, GameModel updatedGame) {
     print('Emitting player_joined event for game: $gameId');
-    _socketManager.emit('game_action', {
-      'gameId': gameId,
-      'action': 'player_joined',
-      'game': updatedGame.toJson(),
-      'timestamp': DateTime.now().toIso8601String()
+
+    // Throttle to prevent rapid emissions
+    _emitThrottleTimer?.cancel();
+    _emitThrottleTimer = Timer(Duration(milliseconds: 250), () {
+      _socketManager.emit('game_action', {
+        'gameId': gameId,
+        'action': 'player_joined',
+        'game': updatedGame.toJson(),
+        'timestamp': DateTime.now().toIso8601String()
+      });
     });
   }
 
@@ -285,8 +295,7 @@ class GameService {
     print('Player left notification emitted');
   }
 
-
-// Validate if a short game ID exists
+  // Validate if a short game ID exists
   Future<Map<String, dynamic>> validateGameId(String shortId, String authToken) async {
     try {
       print('Validating game ID with server: $shortId');
@@ -401,7 +410,7 @@ class GameService {
     return null;
   }
 
-// Join a game
+  // Join a game with improved error handling
   Future<Map<String, dynamic>> joinGame(String shortId, String authToken) async {
     try {
       print('Attempting to join game with ID: $shortId');
@@ -562,11 +571,22 @@ class GameService {
     }
   }
 
-  // Get game details
+  // Get game details with improved error handling and throttling
   Future<Map<String, dynamic>> getGame(
       String gameId,
       String authToken,
       ) async {
+    // If a refresh is already in progress, cancel it to avoid multiple calls
+    if (_refreshThrottleTimer != null && _refreshThrottleTimer!.isActive) {
+      return {
+        'success': false,
+        'message': 'Refresh already in progress',
+      };
+    }
+
+    // Set throttle timer to prevent excessive API calls
+    _refreshThrottleTimer = Timer(Duration(milliseconds: 500), () {});
+
     try {
       print('Fetching game details for ID: $gameId');
 
@@ -655,13 +675,17 @@ class GameService {
       if (response.statusCode == 200) {
         final game = GameModel.fromJson(responseData['game']);
 
-        // Notify all players that the game has started
-        _socketManager.emit('game_action', {
-          'gameId': gameId,
-          'action': 'game_started',
-          'game': game.toJson(),
-          'timestamp': DateTime.now().toIso8601String()
-        });
+        // Notify all players that the game has started with broadcasting
+        for (int i = 0; i < 3; i++) { // Send multiple times to ensure delivery
+          Future.delayed(Duration(milliseconds: i * 300), () {
+            _socketManager.emit('game_action', {
+              'gameId': gameId,
+              'action': 'game_started',
+              'game': game.toJson(),
+              'timestamp': DateTime.now().toIso8601String()
+            });
+          });
+        }
 
         return {
           'success': true,
@@ -700,13 +724,17 @@ class GameService {
       if (response.statusCode == 200) {
         final game = GameModel.fromJson(responseData['game']);
 
-        // Notify all players that the game has ended
-        _socketManager.emit('game_action', {
-          'gameId': gameId,
-          'action': 'game_ended',
-          'game': game.toJson(),
-          'timestamp': DateTime.now().toIso8601String()
-        });
+        // Notify all players that the game has ended with retry mechanism
+        for (int i = 0; i < 3; i++) { // Send multiple times to ensure delivery
+          Future.delayed(Duration(milliseconds: i * 300), () {
+            _socketManager.emit('game_action', {
+              'gameId': gameId,
+              'action': 'game_ended',
+              'game': game.toJson(),
+              'timestamp': DateTime.now().toIso8601String()
+            });
+          });
+        }
 
         return {
           'success': true,
@@ -726,32 +754,38 @@ class GameService {
     }
   }
 
-  // Game action (check, call, raise, fold)
+  // Game action (check, call, raise, fold) with improved error handling
   Future<Map<String, dynamic>> gameAction(
       String gameId,
-      String action,
+      String actionType,
       String authToken,
       {int? amount}
       ) async {
     try {
-      // Make sure we're in the game room before sending action
+      // Make sure we're in the game room
       if (!_socketManager.isInRoom(gameId)) {
-        print('Not in game room, rejoining before action: $gameId');
         _socketManager.joinGameRoom(gameId);
-
-        // Small delay to ensure join completes
         await Future.delayed(Duration(milliseconds: 300));
       }
 
+      // Convert "bet" to "raise" since the server seems to use "raise" for both
+      String serverActionType = actionType;
+      if (actionType == 'bet') {
+        serverActionType = 'raise';  // Use "raise" for the first bet in a round
+      }
+
+      // Create the request body
       final body = <String, dynamic>{
-        'action': action,
+        'action': serverActionType,  // Use the converted action type
       };
 
-      if (amount != null) {
+      // For raise actions, amount is required
+      if ((serverActionType == 'raise') && amount != null) {
         body['amount'] = amount;
       }
 
-      print('Sending game action: $action to server for game: $gameId');
+      print('Sending game action: $actionType (as $serverActionType) to server for game: $gameId');
+      print('Request body: $body');
 
       final response = await http.post(
         Uri.parse('${ApiConfig.baseUrl}${ApiConfig.gamesEndpoint}/$gameId/action'),
@@ -763,30 +797,22 @@ class GameService {
       );
 
       print('Game action response status: ${response.statusCode}');
-      print('Game action response body: ${response.body.substring(0, Math.min(200, response.body.length))}');
-
-      final responseData = jsonDecode(response.body);
+      print('Game action response body: ${response.body}');
 
       if (response.statusCode == 200) {
+        final responseData = jsonDecode(response.body);
         final game = GameModel.fromJson(responseData['game']);
 
-        // Manually emit a turn change event to ensure all clients update
-        // This helps in case the server-side event doesn't reach all clients
-        _socketManager.emit('game_action', {
-          'gameId': gameId,
-          'action': 'turn_changed',
-          'game': game.toJson(),
-          'actionType': action,
-          'amount': amount,
-          'timestamp': DateTime.now().toIso8601String()
-        });
+        // Still use the original action type for client-side updates
+        _broadcastActionToPlayers(gameId, actionType, amount, game);
 
         return {
           'success': true,
-          'message': responseData['message'],
+          'message': responseData['message'] ?? 'Action performed successfully',
           'game': game,
         };
       } else {
+        final responseData = jsonDecode(response.body);
         return {
           'success': false,
           'message': responseData['message'] ?? 'Failed to perform action',
@@ -796,9 +822,46 @@ class GameService {
       print('Error in gameAction: $e');
       return {
         'success': false,
-        'message': 'Network error: ${e.toString()}',
+        'message': 'Error: ${e.toString()}',
       };
     }
+  }
+
+  // Helper method to broadcast action to all players with retry mechanism
+  void _broadcastActionToPlayers(String gameId, String action, int? amount, GameModel game) {
+    // Emit multiple events to ensure all clients receive the update
+
+    // First, emit a turn change event to update the UI immediately
+    _socketManager.emit('game_action', {
+      'gameId': gameId,
+      'action': 'turn_changed',
+      'previousPlayerIndex': game.currentPlayerIndex > 0 ? game.currentPlayerIndex - 1 : game.players.length - 1,
+      'currentPlayerIndex': game.currentPlayerIndex,
+      'game': game.toJson(),
+      'timestamp': DateTime.now().toIso8601String()
+    });
+
+    // Then emit a game action event with full details
+    Future.delayed(Duration(milliseconds: 100), () {
+      _socketManager.emit('game_action', {
+        'gameId': gameId,
+        'action': 'game_action_performed',
+        'actionType': action,
+        'amount': amount,
+        'game': game.toJson(),
+        'timestamp': DateTime.now().toIso8601String()
+      });
+    });
+
+    // Send a general game update as backup
+    Future.delayed(Duration(milliseconds: 200), () {
+      _socketManager.emit('game_action', {
+        'gameId': gameId,
+        'action': 'game_update',
+        'game': game.toJson(),
+        'timestamp': DateTime.now().toIso8601String()
+      });
+    });
   }
 
   // Get active games
@@ -877,6 +940,56 @@ class GameService {
       return {
         'success': false,
         'message': 'Network error: ${e.toString()}',
+      };
+    }
+  }
+
+  Future<Map<String, dynamic>> debugGameAction(
+      String gameId,
+      String action,
+      String authToken,
+      {int? amount}
+      ) async {
+    try {
+      // Create a fully detailed request body
+      final body = <String, dynamic>{
+        'action': action,
+      };
+
+      // For bet and raise actions, must include the amount
+      if (action == 'bet' || action == 'raise') {
+        body['amount'] = amount;
+      }
+
+      print('DEBUG - Sending action to server:');
+      print('Endpoint: ${ApiConfig.baseUrl}${ApiConfig.gamesEndpoint}/$gameId/action');
+      print('Headers: Bearer Token (redacted)');
+      print('Body: $body');
+
+      final response = await http.post(
+        Uri.parse('${ApiConfig.baseUrl}${ApiConfig.gamesEndpoint}/$gameId/action'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $authToken',
+        },
+        body: jsonEncode(body),
+      );
+
+      print('DEBUG - Full response:');
+      print('Status: ${response.statusCode}');
+      print('Body: ${response.body}');
+
+      return {
+        'success': response.statusCode >= 200 && response.statusCode < 300,
+        'status': response.statusCode,
+        'body': response.body,
+        'message': 'Debug completed'
+      };
+    } catch (e) {
+      print('DEBUG - Error: $e');
+      return {
+        'success': false,
+        'message': 'Error: $e',
       };
     }
   }

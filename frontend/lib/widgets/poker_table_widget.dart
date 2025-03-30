@@ -1,7 +1,6 @@
 import 'dart:math' as Math;
 import 'package:flutter/material.dart';
 import '../main.dart';
-import '../models/card_model.dart' as poker;
 import '../models/game_model.dart';
 import '../models/poker_game_model.dart';
 import 'card_widget.dart';
@@ -26,29 +25,73 @@ class PokerTableWidget extends StatefulWidget {
 
 class _PokerTableWidgetState extends State<PokerTableWidget> {
   int _lastPlayerIndex = -1;
+  String? _lastAction;
+  final ScrollController _historyScrollController = ScrollController();
 
   @override
-  Widget build(BuildContext context) {
-    // Check if player turn has changed
-    if (_lastPlayerIndex != widget.gameModel.currentPlayerIndex) {
+  void initState() {
+    super.initState();
+
+    // Scroll to the bottom of history list whenever it's opened
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _scrollToHistoryEnd();
+    });
+  }
+
+  void _scrollToHistoryEnd() {
+    if (_historyScrollController.hasClients) {
+      _historyScrollController.animateTo(
+        _historyScrollController.position.maxScrollExtent,
+        duration: Duration(milliseconds: 200),
+        curve: Curves.easeOut,
+      );
+    }
+  }
+
+  @override
+  void didUpdateWidget(PokerTableWidget oldWidget) {
+    super.didUpdateWidget(oldWidget);
+
+    // Check if the player turn has changed
+    if (_lastPlayerIndex != widget.gameModel.currentPlayerIndex &&
+        widget.gameModel.handInProgress) {
       _lastPlayerIndex = widget.gameModel.currentPlayerIndex;
 
       // If turn has changed, show a notification
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (widget.gameModel.players.isNotEmpty &&
-            widget.gameModel.currentPlayerIndex < widget.gameModel.players.length) {
-          final playerName = widget.gameModel.players[widget.gameModel.currentPlayerIndex].username;
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('It\'s $playerName\'s turn now'),
-              duration: const Duration(seconds: 1),
-              behavior: SnackBarBehavior.floating,
-            ),
-          );
+            widget.gameModel.currentPlayerIndex <
+                widget.gameModel.players.length) {
+          final playerName = widget.gameModel.players[widget.gameModel
+              .currentPlayerIndex].username;
+
+          // Only show the notification if we're not already showing one for this turn
+          if (_lastAction != 'turn_${widget.gameModel.currentPlayerIndex}') {
+            _lastAction = 'turn_${widget.gameModel.currentPlayerIndex}';
+
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('It\'s $playerName\'s turn now'),
+                duration: const Duration(seconds: 1),
+                behavior: SnackBarBehavior.floating,
+              ),
+            );
+          }
         }
       });
     }
 
+    // If history has changed, scroll to the bottom
+    if (oldWidget.gameModel.actionHistory.length !=
+        widget.gameModel.actionHistory.length) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _scrollToHistoryEnd();
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
         final maxWidth = constraints.maxWidth;
@@ -123,7 +166,8 @@ class _PokerTableWidgetState extends State<PokerTableWidget> {
             // Action buttons
             if (widget.gameModel.handInProgress &&
                 widget.gameModel.players.isNotEmpty &&
-                widget.gameModel.currentPlayerIndex < widget.gameModel.players.length &&
+                widget.gameModel.currentPlayerIndex <
+                    widget.gameModel.players.length &&
                 widget.gameModel.currentPlayer.userId == widget.currentUserId &&
                 widget.gameModel.currentRound != BettingRound.showdown)
               Positioned(
@@ -189,21 +233,23 @@ class _PokerTableWidgetState extends State<PokerTableWidget> {
       mainAxisSize: MainAxisSize.min,
       children: [
         ...cards.map(
-              (card) => PlayingCardWidget(
-            card: card,
-            height: 100,
-            width: 70,
-          ),
+              (card) =>
+              PlayingCardWidget(
+                card: card,
+                height: 100,
+                width: 70,
+              ),
         ),
         ...List.generate(
           placeholders,
-              (index) => PlayingCardWidget(
-            card: null,
-            height: 100,
-            width: 70,
-            faceDown: false,
-            showShadow: false,
-          ),
+              (index) =>
+              PlayingCardWidget(
+                card: null,
+                height: 100,
+                width: 70,
+                faceDown: false,
+                showShadow: false,
+              ),
         ),
       ],
     );
@@ -220,7 +266,8 @@ class _PokerTableWidgetState extends State<PokerTableWidget> {
             stateText =
             '${widget.gameModel.winners[0].username} wins!';
           } else {
-            final names = widget.gameModel.winners.map((p) => p.username).join(', ');
+            final names = widget.gameModel.winners.map((p) => p.username).join(
+                ', ');
             stateText = 'Split pot! Winners: $names';
           }
         } else {
@@ -229,9 +276,11 @@ class _PokerTableWidgetState extends State<PokerTableWidget> {
       } else {
         // Make sure we have a current player before trying to access username
         if (widget.gameModel.players.isNotEmpty &&
-            widget.gameModel.currentPlayerIndex < widget.gameModel.players.length) {
+            widget.gameModel.currentPlayerIndex <
+                widget.gameModel.players.length) {
           stateText =
-          '${widget.gameModel.currentRoundName} - ${widget.gameModel.currentPlayer.username}\'s turn';
+          '${widget.gameModel.currentRoundName} - ${widget.gameModel
+              .currentPlayer.username}\'s turn';
         } else {
           stateText = widget.gameModel.currentRoundName;
         }
@@ -275,7 +324,8 @@ class _PokerTableWidgetState extends State<PokerTableWidget> {
       final position = positions[index];
       final isCurrentUser = player.userId == widget.currentUserId;
       final isCurrentPlayer =
-          widget.gameModel.handInProgress && index == widget.gameModel.currentPlayerIndex;
+          widget.gameModel.handInProgress &&
+              index == widget.gameModel.currentPlayerIndex;
       final isDealerButton = index == widget.gameModel.dealerPosition;
       final isSmallBlind = index == widget.gameModel.smallBlindPosition;
       final isBigBlind = index == widget.gameModel.bigBlindPosition;
@@ -387,20 +437,26 @@ class _PokerTableWidgetState extends State<PokerTableWidget> {
                   // First card
                   if (player.holeCards.isNotEmpty)
                     PlayingCardWidget(
-                      card: isCurrentUser || widget.gameModel.currentRound == BettingRound.showdown && !player.hasFolded
+                      card: isCurrentUser || widget.gameModel.currentRound ==
+                          BettingRound.showdown && !player.hasFolded
                           ? player.holeCards[0]
                           : null,
-                      faceDown: !isCurrentUser && widget.gameModel.currentRound != BettingRound.showdown,
+                      faceDown: !isCurrentUser &&
+                          widget.gameModel.currentRound !=
+                              BettingRound.showdown,
                       height: 70,
                       width: 50,
                     ),
                   // Second card
                   if (player.holeCards.length > 1)
                     PlayingCardWidget(
-                      card: isCurrentUser || widget.gameModel.currentRound == BettingRound.showdown && !player.hasFolded
+                      card: isCurrentUser || widget.gameModel.currentRound ==
+                          BettingRound.showdown && !player.hasFolded
                           ? player.holeCards[1]
                           : null,
-                      faceDown: !isCurrentUser && widget.gameModel.currentRound != BettingRound.showdown,
+                      faceDown: !isCurrentUser &&
+                          widget.gameModel.currentRound !=
+                              BettingRound.showdown,
                       height: 70,
                       width: 50,
                     ),
@@ -442,8 +498,8 @@ class _PokerTableWidgetState extends State<PokerTableWidget> {
   }
 
   // Calculate positions for players around the table
-  List<Map<String, double>> _calculatePlayerPositions(
-      int playerCount, double maxWidth, double maxHeight) {
+  List<Map<String, double>> _calculatePlayerPositions(int playerCount,
+      double maxWidth, double maxHeight) {
     final List<Map<String, double>> positions = [];
     final centerX = maxWidth / 2;
     final centerY = maxHeight / 2;
@@ -516,148 +572,270 @@ class _PokerTableWidgetState extends State<PokerTableWidget> {
     final minRaise = widget.gameModel.minimumRaiseAmount();
     final bool canRaise = player.chipBalance >= minRaise;
 
+    // Current big blind value for minimum bet
+    final bigBlind = widget.gameModel.gameModel.bigBlind;
+
     return Container(
       padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
       decoration: BoxDecoration(
         color: Colors.black.withOpacity(0.8),
         borderRadius: BorderRadius.circular(16),
       ),
-      child: Row(
+      child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          // Fold button
-          ElevatedButton(
-            onPressed: () => widget.onAction('fold'),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.red,
+          // Minimum bet/raise info
+          if (widget.gameModel.currentBet > 0)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8.0),
+              child: Text(
+                'Min raise: $minRaise chips',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            )
+          else
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8.0),
+              child: Text(
+                'Min bet: $bigBlind chips',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
             ),
-            child: const Text('Fold'),
-          ),
 
-          const SizedBox(width: 8),
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Fold button
+              ElevatedButton(
+                onPressed: () => widget.onAction('fold'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.red,
+                ),
+                child: const Text('Fold'),
+              ),
 
-          // Check or Call button
-          ElevatedButton(
-            onPressed: canCheck
-                ? () => widget.onAction('check')
-                : callAmount > 0
-                ? () => widget.onAction('call')
-                : null,
-            style: ElevatedButton.styleFrom(
-              backgroundColor: canCheck ? Colors.green : Colors.blue,
-            ),
-            child: Text(canCheck
-                ? 'Check'
-                : callAmount > 0
-                ? 'Call $callAmount'
-                : 'Call'),
-          ),
+              const SizedBox(width: 8),
 
-          const SizedBox(width: 8),
+              // Check or Call button
+              ElevatedButton(
+                onPressed: canCheck
+                    ? () => widget.onAction('check')
+                    : callAmount > 0
+                    ? () => widget.onAction('call')
+                    : null,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: canCheck ? Colors.green : Colors.blue,
+                ),
+                child: Text(canCheck
+                    ? 'Check'
+                    : callAmount > 0
+                    ? 'Call $callAmount'
+                    : 'Call'),
+              ),
 
-          // Raise button
-          ElevatedButton(
-            onPressed: canRaise ? () => _showRaiseDialog() : null,
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.amber,
-            ),
-            child: Text(widget.gameModel.currentBet > 0 ? 'Raise' : 'Bet'),
+              const SizedBox(width: 8),
+
+              // Raise button
+              ElevatedButton(
+                onPressed: canRaise ? () => _showRaiseDialog() : null,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.amber,
+                ),
+                child: Text(widget.gameModel.currentBet > 0 ? 'Raise' : 'Bet'),
+              ),
+            ],
           ),
         ],
       ),
     );
   }
 
-  // Fix for the _showRaiseDialog method
+  // Improved _showRaiseDialog method with better validation
   void _showRaiseDialog() {
     final TextEditingController raiseController = TextEditingController();
     final player = widget.gameModel.currentPlayer;
-    final minRaise = widget.gameModel.minimumRaiseAmount();
+
+    // For a new bet, use the big blind as minimum
+    final bigBlind = widget.gameModel.gameModel.bigBlind;
+    final minAmount = widget.gameModel.currentBet > 0
+        ? widget.gameModel.minimumRaiseAmount()
+        : bigBlind;
+
     final maxRaise = player.chipBalance;
 
-    // Set initial value to minimum raise
-    raiseController.text = minRaise.toString();
+    // Set initial value to minimum amount
+    raiseController.text = minAmount.toString();
+
+    // Flag to track validation errors
+    bool hasError = false;
+    String errorMessage = '';
 
     // Make sure we have a valid context before showing dialog
-    final BuildContext? dialogContext =
-        GlobalObjectKey(widget.gameModel).currentContext ??
-            navigatorKey.currentContext;
-
-    if (dialogContext == null) {
-      print('Cannot show raise dialog: No valid context available');
-      return;
-    }
+    final BuildContext context = navigatorKey.currentContext ?? this.context;
 
     showDialog(
-      context: dialogContext,
-      builder: (context) {
-        return AlertDialog(
-          title: Text(widget.gameModel.currentBet > 0 ? 'Raise Amount' : 'Bet Amount'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: raiseController,
-                keyboardType: TextInputType.number,
-                decoration: InputDecoration(
-                  labelText: 'Amount (chips)',
-                  hintText: 'Min: $minRaise, Max: $maxRaise',
-                  border: const OutlineInputBorder(),
-                ),
-              ),
-              const SizedBox(height: 8),
-              Text('Min: $minRaise, Max: $maxRaise'),
-              Slider(
-                min: minRaise.toDouble(),
-                max: maxRaise.toDouble(),
-                divisions: maxRaise - minRaise > 100
-                    ? 100
-                    : Math.max(1, maxRaise - minRaise),
-                value: double.tryParse(raiseController.text) ?? minRaise.toDouble(),
-                onChanged: (value) {
-                  raiseController.text = value.toInt().toString();
-                },
-              ),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (context, setState) {
+            // Validate the current input
+            void validateAmount() {
+              final amount = int.tryParse(raiseController.text);
+
+              if (amount == null) {
+                setState(() {
+                  hasError = true;
+                  errorMessage = 'Please enter a valid number';
+                });
+              } else if (amount < minAmount) {
+                setState(() {
+                  hasError = true;
+                  errorMessage = widget.gameModel.currentBet > 0
+                      ? 'Raise must be at least $minAmount chips'
+                      : 'Bet must be at least ${bigBlind} chips (the big blind)';
+                });
+              } else if (amount > maxRaise) {
+                setState(() {
+                  hasError = true;
+                  errorMessage = 'You only have $maxRaise chips';
+                });
+              } else {
+                setState(() {
+                  hasError = false;
+                  errorMessage = '';
+                });
+              }
+            }
+
+            return AlertDialog(
+              title: Text(widget.gameModel.currentBet > 0
+                  ? 'Raise Amount'
+                  : 'Bet Amount'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  _quickAmountButton(raiseController, minRaise),
-                  _quickAmountButton(raiseController, (maxRaise / 3).ceil()),
-                  _quickAmountButton(raiseController, (maxRaise / 2).ceil()),
-                  _quickAmountButton(raiseController, maxRaise),
+                  TextField(
+                    controller: raiseController,
+                    keyboardType: TextInputType.number,
+                    decoration: InputDecoration(
+                      labelText: 'Amount (chips)',
+                      hintText: 'Min: $minAmount, Max: $maxRaise',
+                      border: const OutlineInputBorder(),
+                      errorText: hasError ? errorMessage : null,
+                    ),
+                    onChanged: (value) {
+                      validateAmount();
+                    },
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    widget.gameModel.currentBet > 0
+                        ? 'Minimum raise: $minAmount chips'
+                        : 'Minimum bet: $bigBlind chips (big blind)',
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text('Your chips: $maxRaise'),
+                  const SizedBox(height: 16),
+                  Slider(
+                    min: minAmount.toDouble(),
+                    max: maxRaise.toDouble(),
+                    divisions: maxRaise - minAmount > 100
+                        ? 100
+                        : Math.max(1, maxRaise - minAmount),
+                    value: Math.min(
+                      Math.max(
+                        double.tryParse(raiseController.text) ??
+                            minAmount.toDouble(),
+                        minAmount.toDouble(),
+                      ),
+                      maxRaise.toDouble(),
+                    ),
+                    onChanged: (value) {
+                      setState(() {
+                        raiseController.text = value.toInt().toString();
+                        validateAmount();
+                      });
+                    },
+                  ),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      _quickAmountButton(raiseController, minAmount, () {
+                        setState(() {
+                          validateAmount();
+                        });
+                      }),
+                      _quickAmountButton(
+                          raiseController, (maxRaise / 3).ceil(), () {
+                        setState(() {
+                          validateAmount();
+                        });
+                      }),
+                      _quickAmountButton(
+                          raiseController, (maxRaise / 2).ceil(), () {
+                        setState(() {
+                          validateAmount();
+                        });
+                      }),
+                      _quickAmountButton(raiseController, maxRaise, () {
+                        setState(() {
+                          validateAmount();
+                        });
+                      }),
+                    ],
+                  ),
                 ],
               ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text('Cancel'),
-            ),
-            ElevatedButton(
-              onPressed: () {
-                final raiseAmount = int.tryParse(raiseController.text);
-                if (raiseAmount != null && raiseAmount >= minRaise && raiseAmount <= maxRaise) {
-                  Navigator.of(context).pop();
-                  widget.onAction(
-                    widget.gameModel.currentBet > 0 ? 'raise' : 'bet',
-                    amount: raiseAmount,
-                  );
-                }
-              },
-              child: Text(widget.gameModel.currentBet > 0 ? 'Raise' : 'Bet'),
-            ),
-          ],
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: const Text('Cancel'),
+                ),
+                ElevatedButton(
+                  onPressed: hasError ? null : () {
+                    final amount = int.tryParse(raiseController.text);
+                    if (amount != null && amount >= minAmount &&
+                        amount <= maxRaise) {
+                      Navigator.of(context).pop();
+                      widget.onAction(
+                        widget.gameModel.currentBet > 0 ? 'raise' : 'bet',
+                        amount: amount,
+                      );
+                    } else {
+                      // Validate one more time
+                      validateAmount();
+                    }
+                  },
+                  child: Text(
+                      widget.gameModel.currentBet > 0 ? 'Raise' : 'Bet'),
+                ),
+              ],
+            );
+          },
         );
       },
     );
   }
 
-  // Quick button to set specific amount
-  Widget _quickAmountButton(TextEditingController controller, int amount) {
+  // Quick button to set specific amount with validation callback
+  Widget _quickAmountButton(TextEditingController controller, int amount,
+      [Function? onChanged]) {
     return ElevatedButton(
       onPressed: () {
         controller.text = amount.toString();
+        if (onChanged != null) {
+          onChanged();
+        }
       },
       style: ElevatedButton.styleFrom(
         padding: const EdgeInsets.symmetric(horizontal: 8),
@@ -666,42 +844,115 @@ class _PokerTableWidgetState extends State<PokerTableWidget> {
     );
   }
 
-  // Show game history
+  // Improved game history dialog
   void _showHistoryDialog(BuildContext context) {
+    // After the dialog is built, scroll to the end of the list
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _scrollToHistoryEnd();
+    });
+
     showDialog(
       context: context,
       builder: (context) {
         return AlertDialog(
           title: const Text('Hand History'),
-          content: SizedBox(
+          content: Container(
             width: double.maxFinite,
             height: 300,
-            child: ListView.builder(
-              itemCount: widget.gameModel.actionHistory.length,
-              itemBuilder: (context, index) {
-                final action = widget.gameModel.actionHistory[index];
-                final username = action['player'] ?? 'Dealer';
-                final actionText = action['action'];
-                final amount = action['amount'];
-                final round = action['round'];
-
-                String displayText = '$username $actionText';
-                if (amount != null) {
-                  displayText += ' $amount';
-                }
-
-                return ListTile(
-                  leading: Icon(
-                    action['player'] == null
-                        ? Icons.casino
-                        : Icons.person,
-                    color: _getActionColor(actionText),
+            child: Column(
+              children: [
+                // Round filter buttons
+                SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    children: [
+                      _buildRoundFilterChip('All'),
+                      _buildRoundFilterChip('Pre-Flop'),
+                      _buildRoundFilterChip('Flop'),
+                      _buildRoundFilterChip('Turn'),
+                      _buildRoundFilterChip('River'),
+                      _buildRoundFilterChip('Showdown'),
+                    ],
                   ),
-                  title: Text(displayText),
-                  subtitle: Text(round),
-                  dense: true,
-                );
-              },
+                ),
+                Divider(),
+                // History list
+                Expanded(
+                  child: widget.gameModel.actionHistory.isEmpty
+                      ? Center(
+                    child: Text(
+                      'No actions yet',
+                      style: TextStyle(
+                        fontStyle: FontStyle.italic,
+                        color: Colors.grey,
+                      ),
+                    ),
+                  )
+                      : ListView.builder(
+                    controller: _historyScrollController,
+                    itemCount: widget.gameModel.actionHistory.length,
+                    itemBuilder: (context, index) {
+                      final action = widget.gameModel.actionHistory[index];
+                      final username = action['player'] ?? 'Dealer';
+                      final actionText = action['action'];
+                      final amount = action['amount'];
+                      final round = action['round'];
+                      final isCurrentUser = username == widget.gameModel.players
+                          .firstWhere(
+                              (p) => p.userId == widget.currentUserId,
+                          orElse: () =>
+                              PokerPlayer(
+                                  userId: '',
+                                  username: '',
+                                  chipBalance: 0
+                              )
+                      )
+                          .username;
+
+                      String displayText = '$username $actionText';
+                      if (amount != null) {
+                        displayText += ' $amount';
+                      }
+
+                      return Container(
+                        color: index % 2 == 0 ? Colors.grey.shade100 : null,
+                        child: ListTile(
+                          leading: CircleAvatar(
+                            backgroundColor: _getActionColor(actionText),
+                            radius: 14,
+                            child: Icon(
+                              action['player'] == null
+                                  ? Icons.casino
+                                  : Icons.person,
+                              color: Colors.white,
+                              size: 16,
+                            ),
+                          ),
+                          title: Text(
+                            displayText,
+                            style: TextStyle(
+                              fontWeight: isCurrentUser
+                                  ? FontWeight.bold
+                                  : FontWeight.normal,
+                            ),
+                          ),
+                          subtitle: Text(
+                            round,
+                            style: TextStyle(
+                              fontSize: 12,
+                            ),
+                          ),
+                          dense: true,
+                          contentPadding: EdgeInsets.symmetric(
+                            horizontal: 16,
+                            vertical: 4,
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ],
             ),
           ),
           actions: [
@@ -712,6 +963,22 @@ class _PokerTableWidgetState extends State<PokerTableWidget> {
           ],
         );
       },
+    );
+  }
+
+  // Helper method to build round filter chips
+  Widget _buildRoundFilterChip(String roundName) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 4.0),
+      child: FilterChip(
+        label: Text(roundName),
+        // Implement filtering logic if needed
+        onSelected: (selected) {
+          // For now, just a visual element without filtering
+        },
+        backgroundColor: Colors.grey.shade200,
+        selectedColor: Colors.blue.shade100,
+      ),
     );
   }
 
@@ -727,8 +994,16 @@ class _PokerTableWidgetState extends State<PokerTableWidget> {
       return Colors.amber;
     } else if (action.contains('win')) {
       return Colors.purple;
+    } else if (action.contains('deal')) {
+      return Colors.teal;
     } else {
       return Colors.grey;
     }
+  }
+
+  @override
+  void dispose() {
+    _historyScrollController.dispose();
+    super.dispose();
   }
 }
