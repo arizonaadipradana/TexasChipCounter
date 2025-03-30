@@ -266,6 +266,9 @@ class _PokerGameScreenState extends State<PokerGameScreen> {
     if (data == null || !mounted) return;
 
     try {
+      // Log all incoming events for debugging
+      print('Game event received: ${data['action'] ?? 'unknown'} - ${DateTime.now().toIso8601String()}');
+
       // Special handling for force_refresh events
       if (data['action'] == 'force_refresh') {
         print('Handling force_refresh event');
@@ -278,17 +281,39 @@ class _PokerGameScreenState extends State<PokerGameScreen> {
         return;
       }
 
+      // Handle request_refresh events
+      if (data['action'] == 'request_refresh') {
+        print('Received refresh request, updating game state from server...');
+        _refreshGameState(silent: true);
+        return;
+      }
+
+      // Handle turn_changed events with higher priority
+      if (data['action'] == 'turn_changed') {
+        print('Turn changed event received: ${data['previousPlayerIndex']} -> ${data['currentPlayerIndex']}');
+
+        // Always refresh from server after turn changes to ensure all clients are in sync
+        _refreshGameState(silent: true);
+
+        // Show turn change notification immediately without waiting for refresh
+        if (data['currentPlayerIndex'] != null &&
+            data['currentPlayerIndex'] < _pokerGame.players.length) {
+          final playerName = _pokerGame.players[data['currentPlayerIndex']].username;
+          _showTurnChangeNotification(playerName);
+        }
+      }
+
       // If game data is available, update our model
       if (data['game'] != null) {
         final updatedGame = GameModel.fromJson(data['game']);
 
         // Log the updated state for debugging
-        print('Game update received: Current player index: ${updatedGame.currentPlayerIndex}, Status: ${updatedGame.status}');
-        print('Pot updated: ${updatedGame.pot}, Current bet: ${updatedGame.currentBet}');
+        print('Game update: player index: ${updatedGame.currentPlayerIndex}, Status: ${updatedGame.status}');
+        print('Pot: ${updatedGame.pot}, Bet: ${updatedGame.currentBet}');
 
         // Force UI update with setState
         setState(() {
-          // Update base game properties
+          // Important: Update ALL relevant game properties
           _pokerGame.gameModel.status = updatedGame.status;
           _pokerGame.gameModel.currentPlayerIndex = updatedGame.currentPlayerIndex;
           _pokerGame.gameModel.pot = updatedGame.pot ?? _pokerGame.gameModel.pot;
@@ -296,51 +321,43 @@ class _PokerGameScreenState extends State<PokerGameScreen> {
 
           // Update player data
           if (updatedGame.players.isNotEmpty) {
-            // Check if player count changed (someone joined/left)
-            if (updatedGame.players.length != _pokerGame.players.length) {
-              print('Player count changed: ${_pokerGame.players.length} -> ${updatedGame.players.length}');
-              // Update entire player list
-              _pokerGame.players = updatedGame.players
-                  .map((p) => PokerPlayer.fromPlayer(p))
-                  .toList();
-            } else {
-              // Update each player's data
-              for (final updatedPlayer in updatedGame.players) {
-                final existingPlayerIndex = _pokerGame.players.indexWhere(
-                        (p) => p.userId == updatedPlayer.userId
-                );
+            // Update each player's data, preserving poker-specific properties
+            for (final updatedPlayer in updatedGame.players) {
+              final existingPlayerIndex = _pokerGame.players.indexWhere(
+                      (p) => p.userId == updatedPlayer.userId
+              );
 
-                if (existingPlayerIndex >= 0) {
-                  // Update important properties
-                  _pokerGame.players[existingPlayerIndex].chipBalance = updatedPlayer.chipBalance;
+              if (existingPlayerIndex >= 0) {
+                // Update important properties
+                _pokerGame.players[existingPlayerIndex].chipBalance = updatedPlayer.chipBalance;
 
-                  // Check if there's bet information from the current round
-                  if (data['action'] == 'game_action_performed' ||
-                      data['action'] == 'turn_changed') {
-                    // Find the player who acted
-                    if (data['previousPlayerIndex'] != null &&
-                        data['previousPlayerIndex'] < _pokerGame.players.length) {
-                      final actingPlayerIndex = data['previousPlayerIndex'];
-                      final actionType = data['actionType'];
+                // Also update current bet if we're processing an action event
+                if (data['action'] == 'game_action_performed' &&
+                    data['actionType'] != null) {
 
-                      if (actionType == 'bet' || actionType == 'raise' || actionType == 'call') {
-                        int betAmount = 0;
+                  // Handle different action types
+                  if (data['previousPlayerIndex'] != null &&
+                      data['previousPlayerIndex'] < _pokerGame.players.length) {
 
-                        if (actionType == 'bet' || actionType == 'raise') {
-                          betAmount = data['amount'] is int
-                              ? data['amount']
-                              : (data['amount'] as num?)?.toInt() ?? 0;
-                        } else if (actionType == 'call') {
-                          // Handle nullable currentBet
-                          betAmount = _pokerGame.gameModel.currentBet ?? 0;
+                    final actedPlayerIndex = data['previousPlayerIndex'];
+
+                    switch(data['actionType']) {
+                      case 'bet':
+                      case 'raise':
+                        if (data['amount'] != null) {
+                          _pokerGame.players[actedPlayerIndex].currentBet =
+                          (data['amount'] is int) ? data['amount'] : int.parse(data['amount'].toString());
                         }
-
-                        if (betAmount > 0) {
-                          _pokerGame.players[actingPlayerIndex].currentBet = betAmount;
-                        }
-                      } else if (actionType == 'fold') {
-                        _pokerGame.players[actingPlayerIndex].hasFolded = true;
-                      }
+                        break;
+                      case 'call':
+                        _pokerGame.players[actedPlayerIndex].currentBet = _pokerGame.gameModel.currentBet ?? 0;
+                        break;
+                      case 'fold':
+                        _pokerGame.players[actedPlayerIndex].hasFolded = true;
+                        break;
+                      case 'check':
+                      // Just mark as acted
+                        break;
                     }
                   }
                 }
@@ -355,27 +372,26 @@ class _PokerGameScreenState extends State<PokerGameScreen> {
           }
         });
 
-        // Show turn change notification
-        if (data['action'] == 'turn_changed' ||
-            (data['action'] == 'game_action_performed' &&
-                data['currentPlayerIndex'] != null)) {
-
-          final playerIndex = data['currentPlayerIndex'] ?? _pokerGame.currentPlayerIndex;
-          if (playerIndex < _pokerGame.players.length) {
-            final playerName = _pokerGame.players[playerIndex].username;
-            _showTurnChangeNotification(playerName);
-          }
+        // Handle specific game action events
+        if (data['action'] == 'game_action_performed' && data['actionType'] != null) {
+          _handleGameAction(data);
         }
 
         // Force a refresh of the UI
         _pokerGame.notifyListeners();
-      }
 
-      // Handle specific game action events
-      if (data['action'] == 'game_action_performed' && data['actionType'] != null) {
-        _handleGameAction(data);
+        // For important events, schedule a server refresh after a short delay
+        // This ensures all clients eventually converge to the same state
+        if (data['action'] == 'game_action_performed' ||
+            data['action'] == 'turn_changed' ||
+            data['action'] == 'game_started') {
+          Future.delayed(Duration(milliseconds: 500), () {
+            if (mounted) {
+              _refreshGameState(silent: true);
+            }
+          });
+        }
       }
-
     } catch (e) {
       print('Error handling game update: $e');
       // If we encounter an error processing the event, refresh state from server

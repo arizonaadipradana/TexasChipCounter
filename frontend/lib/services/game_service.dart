@@ -90,6 +90,7 @@ class GameService {
 
   // Listen for all game-related real-time updates with a single handler
   // This consolidates all event handlers to prevent socket disconnection issues
+  // Update the listenForAllGameUpdates method to ensure all clients get updates
   void listenForAllGameUpdates(Function(dynamic) onUpdate) {
     print('Setting up consolidated game update listeners');
 
@@ -114,21 +115,24 @@ class GameService {
       // Process the event immediately
       onUpdate(data);
 
-      // Also force a UI refresh after a short delay to ensure changes are reflected
-      Future.delayed(Duration(milliseconds: 100), () {
-        if (_socketManager.isConnected) {
-          // Create a refresh event to trigger the UI update
-          final refreshEvent = {
-            'action': 'force_refresh',
-            'original_event': eventName,
-            'gameId': data['gameId'],
-            'timestamp': DateTime.now().toIso8601String()
-          };
+      // For critical game events, request a fresh state from the server
+      if (eventName == 'turn_changed' ||
+          eventName == 'game_action_performed' ||
+          eventName == 'game_started') {
 
-          // Pass through the handler again
-          onUpdate(refreshEvent);
-        }
-      });
+        // Request a state refresh after a short delay
+        Future.delayed(Duration(milliseconds: 100), () {
+          if (_socketManager.isConnected && data['gameId'] != null) {
+            print('Requesting state refresh after $eventName event');
+            // Create a new event to request a refresh of game state
+            _socketManager.emit('game_action', {
+              'action': 'request_refresh',
+              'gameId': data['gameId'],
+              'timestamp': DateTime.now().toIso8601String()
+            });
+          }
+        });
+      }
     }
 
     // Listen for all the different game events with the same handler
@@ -141,17 +145,10 @@ class GameService {
     _socketManager.on('game_ended', gameEventHandler);
     _socketManager.on('turn_changed', gameEventHandler);
 
-    // Add a dedicated refresh event handler
-    _socketManager.on('force_refresh', (data) {
-      print('Forcing UI refresh from event: ${data['original_event']}');
-      onUpdate(data);
-    });
-
-    // Add a request_refresh handler that gets fresh data from server
+    // Add a specific request_refresh handler
     _socketManager.on('request_refresh', (data) {
-      print('Received refresh request from another client, refreshing game state...');
+      print('Received refresh request, fetching latest game state...');
 
-      // Force a state refresh
       if (data['gameId'] != null && _socketManager.authToken != null) {
         getGame(data['gameId'], _socketManager.authToken!)
             .then((result) {
@@ -874,8 +871,8 @@ class GameService {
         final responseData = jsonDecode(response.body);
         final game = GameModel.fromJson(responseData['game']);
 
-        // Still use the original action type for client-side updates
-        _broadcastActionToPlayers(gameId, actionType, amount, game);
+        // Improved broadcasting with multiple events for redundancy
+        _broadcastActionWithRedundancy(gameId, actionType, amount, game);
 
         return {
           'success': true,
@@ -896,6 +893,64 @@ class GameService {
         'message': 'Error: ${e.toString()}',
       };
     }
+  }
+
+  // New method for redundant broadcasting to ensure all clients get the update
+  void _broadcastActionWithRedundancy(String gameId, String action, int? amount, GameModel game) {
+    // Emit multiple events with different delays to make sure clients receive the update
+
+    // 1. Emit turn_changed event immediately
+    _socketManager.emit('game_action', {
+      'gameId': gameId,
+      'action': 'turn_changed',
+      'previousPlayerIndex': game.currentPlayerIndex > 0 ? game.currentPlayerIndex - 1 : game.players.length - 1,
+      'currentPlayerIndex': game.currentPlayerIndex,
+      'game': game.toJson(),
+      'timestamp': DateTime.now().toIso8601String()
+    });
+
+    // 2. Emit game_action_performed with details (100ms delay)
+    Future.delayed(Duration(milliseconds: 100), () {
+      _socketManager.emit('game_action', {
+        'gameId': gameId,
+        'action': 'game_action_performed',
+        'actionType': action,
+        'amount': amount,
+        'previousPlayerIndex': game.currentPlayerIndex > 0 ? game.currentPlayerIndex - 1 : game.players.length - 1,
+        'currentPlayerIndex': game.currentPlayerIndex,
+        'game': game.toJson(),
+        'timestamp': DateTime.now().toIso8601String()
+      });
+    });
+
+    // 3. Emit general game_update (200ms delay)
+    Future.delayed(Duration(milliseconds: 200), () {
+      _socketManager.emit('game_action', {
+        'gameId': gameId,
+        'action': 'game_update',
+        'game': game.toJson(),
+        'timestamp': DateTime.now().toIso8601String()
+      });
+    });
+
+    // 4. Request refresh from all clients (300ms delay)
+    Future.delayed(Duration(milliseconds: 300), () {
+      _socketManager.emit('game_action', {
+        'gameId': gameId,
+        'action': 'request_refresh',
+        'timestamp': DateTime.now().toIso8601String()
+      });
+    });
+
+    // 5. One more game_update for redundancy (500ms delay)
+    Future.delayed(Duration(milliseconds: 500), () {
+      _socketManager.emit('game_action', {
+        'gameId': gameId,
+        'action': 'game_update',
+        'game': game.toJson(),
+        'timestamp': DateTime.now().toIso8601String()
+      });
+    });
   }
 
   // Helper method to broadcast action to all players with retry mechanism

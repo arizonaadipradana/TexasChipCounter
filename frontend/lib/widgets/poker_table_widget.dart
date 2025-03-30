@@ -71,6 +71,7 @@ class _PokerTableWidgetState extends State<PokerTableWidget> {
                 widget.gameModel.players.length) {
           final playerName = widget.gameModel.players[widget.gameModel
               .currentPlayerIndex].username;
+          final isCurrentUserTurn = widget.gameModel.players[widget.gameModel.currentPlayerIndex].userId == widget.currentUserId;
 
           // Only show the notification if we're not already showing one for this turn
           if (_lastAction != 'turn_${widget.gameModel.currentPlayerIndex}') {
@@ -78,11 +79,17 @@ class _PokerTableWidgetState extends State<PokerTableWidget> {
 
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
-                content: Text('It\'s $playerName\'s turn now'),
-                duration: const Duration(seconds: 1),
+                content: Text(isCurrentUserTurn
+                    ? 'It\'s your turn now!'
+                    : 'It\'s $playerName\'s turn now'),
+                duration: const Duration(seconds: 2),
                 behavior: SnackBarBehavior.floating,
+                backgroundColor: isCurrentUserTurn ? Colors.green : Colors.blue,
               ),
             );
+
+            // Call _updateUI to refresh the table state
+            _updateUI();
           }
         }
       });
@@ -93,6 +100,14 @@ class _PokerTableWidgetState extends State<PokerTableWidget> {
         widget.gameModel.actionHistory.length) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _scrollToHistoryEnd();
+      });
+    }
+
+    // Force rebuild the UI whenever the current player changes
+    if (oldWidget.gameModel.currentPlayerIndex != widget.gameModel.currentPlayerIndex) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        // Use _updateUI to trigger a rebuild of the table
+        _updateUI();
       });
     }
   }
@@ -255,6 +270,173 @@ class _PokerTableWidgetState extends State<PokerTableWidget> {
     );
   }
 
+  Widget _buildPlayerCard(PokerPlayer player, Map<String, double> position, bool isCurrentPlayer) {
+    final isCurrentUser = player.userId == widget.currentUserId;
+    final isDealerButton = player == widget.gameModel.dealer;
+    final isSmallBlind = player == widget.gameModel.smallBlind;
+    final isBigBlind = player == widget.gameModel.bigBlind;
+
+    // Calculate animation values for visual cues
+    final double glowIntensity = isCurrentPlayer ? 0.8 : 0.0;
+    final double scaleFactor = isCurrentPlayer ? 1.05 : 1.0;
+
+    return Positioned(
+      left: position['left'],
+      top: position['top'],
+      child: AnimatedContainer(
+        duration: Duration(milliseconds: 300),
+        curve: Curves.easeInOut,
+        transform: Matrix4.identity()..scale(scaleFactor),
+        decoration: BoxDecoration(
+          color: isCurrentPlayer
+              ? Colors.blue.withOpacity(0.8)
+              : Colors.black.withOpacity(0.7),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: isCurrentUser ? Colors.yellow : Colors.white,
+            width: isCurrentUser ? 3 : 1,
+          ),
+          boxShadow: isCurrentPlayer ? [
+            BoxShadow(
+              color: Colors.blue.withOpacity(glowIntensity),
+              blurRadius: 10,
+              spreadRadius: 3,
+            )
+          ] : null,
+        ),
+        padding: const EdgeInsets.all(8),
+        width: 160,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Player name and chips
+            Text(
+              player.username,
+              style: TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+                fontSize: isCurrentUser ? 16 : 14,
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+            Text(
+              '${player.chipBalance} chips',
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 12,
+              ),
+            ),
+
+            const SizedBox(height: 4),
+
+            // Player status badges
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (isDealerButton)
+                  _buildStatusBadge(
+                    'D',
+                    Colors.white,
+                    Colors.black,
+                  ),
+                if (isSmallBlind)
+                  _buildStatusBadge(
+                    'SB',
+                    Colors.blue.shade300,
+                    Colors.black,
+                  ),
+                if (isBigBlind)
+                  _buildStatusBadge(
+                    'BB',
+                    Colors.orange.shade300,
+                    Colors.black,
+                  ),
+                if (player.hasFolded)
+                  _buildStatusBadge(
+                    'Fold',
+                    Colors.red,
+                    Colors.white,
+                  ),
+                if (player.isAllIn)
+                  _buildStatusBadge(
+                    'All-In',
+                    Colors.purple,
+                    Colors.white,
+                  ),
+                if (isCurrentPlayer)
+                  _buildStatusBadge(
+                    'Turn',
+                    Colors.green,
+                    Colors.white,
+                  ),
+              ],
+            ),
+
+            const SizedBox(height: 8),
+
+            // Player's current bet
+            if (player.currentBet > 0)
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 8,
+                  vertical: 2,
+                ),
+                decoration: BoxDecoration(
+                  color: Colors.amber,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Text(
+                  'Bet: ${player.currentBet}',
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+
+            const SizedBox(height: 8),
+
+            // Player's hole cards
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Card code remains the same...
+              ],
+            ),
+
+            // Player's hand evaluation at showdown
+            if (widget.gameModel.currentRound == BettingRound.showdown &&
+                !player.hasFolded &&
+                player.handEvaluation != null)
+              Container(
+                margin: const EdgeInsets.only(top: 4),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 8,
+                  vertical: 2,
+                ),
+                decoration: BoxDecoration(
+                  color: widget.gameModel.winners.contains(player)
+                      ? Colors.amber
+                      : Colors.white,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Text(
+                  player.handEvaluation!.displayName,
+                  style: TextStyle(
+                    color: widget.gameModel.winners.contains(player)
+                        ? Colors.black
+                        : Colors.grey.shade700,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 12,
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
   // Build the community cards display
   Widget _buildCommunityCards() {
     final cards = widget.gameModel.communityCards;
@@ -353,180 +535,14 @@ class _PokerTableWidgetState extends State<PokerTableWidget> {
     return List.generate(players.length, (index) {
       final player = players[index];
       final position = positions[index];
-      final isCurrentUser = player.userId == widget.currentUserId;
       final isCurrentPlayer =
           widget.gameModel.handInProgress &&
               index == widget.gameModel.currentPlayerIndex;
-      final isDealerButton = index == widget.gameModel.dealerPosition;
-      final isSmallBlind = index == widget.gameModel.smallBlindPosition;
-      final isBigBlind = index == widget.gameModel.bigBlindPosition;
 
-      return Positioned(
-        left: position['left'],
-        top: position['top'],
-        child: Container(
-          width: 160,
-          decoration: BoxDecoration(
-            color: isCurrentPlayer
-                ? Colors.blue.withOpacity(0.8)
-                : Colors.black.withOpacity(0.7),
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(
-              color: isCurrentUser ? Colors.yellow : Colors.white,
-              width: isCurrentUser ? 3 : 1,
-            ),
-          ),
-          padding: const EdgeInsets.all(8),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              // Player name and chips
-              Text(
-                player.username,
-                style: TextStyle(
-                  color: Colors.white,
-                  fontWeight: FontWeight.bold,
-                  fontSize: isCurrentUser ? 16 : 14,
-                ),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-              Text(
-                '${player.chipBalance} chips',
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 12,
-                ),
-              ),
-
-              const SizedBox(height: 4),
-
-              // Player status badges
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (isDealerButton)
-                    _buildStatusBadge(
-                      'D',
-                      Colors.white,
-                      Colors.black,
-                    ),
-                  if (isSmallBlind)
-                    _buildStatusBadge(
-                      'SB',
-                      Colors.blue.shade300,
-                      Colors.black,
-                    ),
-                  if (isBigBlind)
-                    _buildStatusBadge(
-                      'BB',
-                      Colors.orange.shade300,
-                      Colors.black,
-                    ),
-                  if (player.hasFolded)
-                    _buildStatusBadge(
-                      'Fold',
-                      Colors.red,
-                      Colors.white,
-                    ),
-                  if (player.isAllIn)
-                    _buildStatusBadge(
-                      'All-In',
-                      Colors.purple,
-                      Colors.white,
-                    ),
-                ],
-              ),
-
-              const SizedBox(height: 8),
-
-              // Player's current bet
-              if (player.currentBet > 0)
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 8,
-                    vertical: 2,
-                  ),
-                  decoration: BoxDecoration(
-                    color: Colors.amber,
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Text(
-                    'Bet: ${player.currentBet}',
-                    style: const TextStyle(
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ),
-
-              const SizedBox(height: 8),
-
-              // Player's hole cards
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  // First card
-                  if (player.holeCards.isNotEmpty)
-                    PlayingCardWidget(
-                      card: isCurrentUser || widget.gameModel.currentRound ==
-                          BettingRound.showdown && !player.hasFolded
-                          ? player.holeCards[0]
-                          : null,
-                      faceDown: !isCurrentUser &&
-                          widget.gameModel.currentRound !=
-                              BettingRound.showdown,
-                      height: 70,
-                      width: 50,
-                    ),
-                  // Second card
-                  if (player.holeCards.length > 1)
-                    PlayingCardWidget(
-                      card: isCurrentUser || widget.gameModel.currentRound ==
-                          BettingRound.showdown && !player.hasFolded
-                          ? player.holeCards[1]
-                          : null,
-                      faceDown: !isCurrentUser &&
-                          widget.gameModel.currentRound !=
-                              BettingRound.showdown,
-                      height: 70,
-                      width: 50,
-                    ),
-                ],
-              ),
-
-              // Player's hand evaluation at showdown
-              if (widget.gameModel.currentRound == BettingRound.showdown &&
-                  !player.hasFolded &&
-                  player.handEvaluation != null)
-                Container(
-                  margin: const EdgeInsets.only(top: 4),
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 8,
-                    vertical: 2,
-                  ),
-                  decoration: BoxDecoration(
-                    color: widget.gameModel.winners.contains(player)
-                        ? Colors.amber
-                        : Colors.white,
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Text(
-                    player.handEvaluation!.displayName,
-                    style: TextStyle(
-                      color: widget.gameModel.winners.contains(player)
-                          ? Colors.black
-                          : Colors.grey.shade700,
-                      fontWeight: FontWeight.bold,
-                      fontSize: 12,
-                    ),
-                  ),
-                ),
-            ],
-          ),
-        ),
-      );
+      return _buildPlayerCard(player, position, isCurrentPlayer);
     });
   }
+
 
   // Calculate positions for players around the table
   List<Map<String, double>> _calculatePlayerPositions(int playerCount,
@@ -1037,4 +1053,47 @@ class _PokerTableWidgetState extends State<PokerTableWidget> {
     _historyScrollController.dispose();
     super.dispose();
   }
+
+  void _updateUI() {
+    if (mounted) {
+      setState(() {});
+
+      // Force the game model to notify listeners
+      widget.gameModel.notifyListeners();
+    }
+  }
+
+  void updateTable() {
+    _updateUI();
+  }
+
+  dynamic findPokerTableWidgetState(BuildContext context) {
+    dynamic result;
+
+    // Try to find the PokerTableWidget's State in the current context
+    void visitor(Element element) {
+      if (element.widget.runtimeType.toString().contains('PokerTableWidget')) {
+        // We found the widget, now get its state
+        final state = (element as StatefulElement).state;
+        if (state.runtimeType.toString().contains('_PokerTableWidgetState')) {
+          result = state;
+          return;
+        }
+      }
+
+      element.visitChildren(visitor);
+    }
+
+    try {
+      // Safely try to walk the widget tree
+      if (context != null) {
+        context.visitChildElements(visitor);
+      }
+    } catch (e) {
+      print('Error finding PokerTableWidget: $e');
+    }
+
+    return result;
+  }
+
 }

@@ -3,8 +3,6 @@ import 'dart:math' as Math;
 import 'package:socket_io_client/socket_io_client.dart' as io;
 import '../config/api_config.dart';
 
-/// A singleton manager for socket.io connections to ensure
-/// persistent connections across screen transitions.
 class SocketManager {
   // Singleton instance
   static final SocketManager _instance = SocketManager._internal();
@@ -191,7 +189,7 @@ class SocketManager {
     _joinedRooms.remove(gameId);
   }
 
-  /// Emit an event to the server with improved reliability
+  /// Emit an event to the server with improved reliability and broadcasting
   void emit(String event, dynamic data) {
     print('Emitting $event event with data: ${data.toString().substring(0, Math.min(100, data.toString().length))}...');
 
@@ -217,31 +215,15 @@ class SocketManager {
         'data': data,
       });
 
-      // Queue the emit for after connection (basic retry)
-      Future.delayed(Duration(milliseconds: 500), () {
-        if (_socket != null && _isConnected) {
-          print('Socket connected, emitting delayed event: $event');
-          _socket!.emit(event, data);
-
-          // Emit to all clients in room via broadcast too
-          if (event == 'game_action' && data['gameId'] != null) {
-            _socket!.emit('broadcast_to_room', {
-              'room': data['gameId'],
-              'event': data['action'] ?? event,
-              'data': data
-            });
+      // Multiple retries with increasing delays for reliability
+      for (int i = 0; i < 3; i++) {
+        Future.delayed(Duration(milliseconds: 500 * (i + 1)), () {
+          if (_socket != null && _isConnected) {
+            print('Socket connected, emitting delayed event: $event (attempt ${i+1})');
+            _socket!.emit(event, data);
           }
-
-          // Remove from pending list if it's still there
-          _pendingEvents.removeWhere((e) =>
-          e['event'] == event && e['data'] == data);
-        } else {
-          // Try to connect
-          if (_socket != null) {
-            _socket!.connect();
-          }
-        }
-      });
+        });
+      }
 
       return;
     }
@@ -249,20 +231,36 @@ class SocketManager {
     // Send the event
     _socket!.emit(event, data);
 
-    // For game actions, also try to broadcast to all clients in the room
+    // For game actions, also broadcast to all clients in the room
     if (event == 'game_action' && data['gameId'] != null) {
-      _socket!.emit('broadcast_to_room', {
-        'room': data['gameId'],
-        'event': data['action'] ?? event,
-        'data': data
-      });
+      // Multiple emits with different events to ensure all clients receive the update
+      if (data['action'] == 'game_action_performed' ||
+          data['action'] == 'turn_changed') {
 
-      // Add extra debug emit to ensure everyone gets the update
-      Future.delayed(Duration(milliseconds: 300), () {
-        if (_isConnected) {
-          _socket!.emit('game_update', data);
-        }
-      });
+        // Extra emit with small delay to ensure propagation
+        Future.delayed(Duration(milliseconds: 100), () {
+          if (_isConnected) {
+            // Emit generic game_update as backup
+            _socket!.emit('game_action', {
+              'gameId': data['gameId'],
+              'action': 'game_update',
+              'game': data['game'],
+              'timestamp': DateTime.now().toIso8601String()
+            });
+          }
+        });
+
+        // Force a refresh request to all clients
+        Future.delayed(Duration(milliseconds: 200), () {
+          if (_isConnected) {
+            _socket!.emit('game_action', {
+              'gameId': data['gameId'],
+              'action': 'request_refresh',
+              'timestamp': DateTime.now().toIso8601String()
+            });
+          }
+        });
+      }
     }
   }
 
@@ -279,19 +277,19 @@ class SocketManager {
     }
 
     // Check if this handler is already registered
-    if (_eventListeners[event]!.contains(handler)) {
-      print('Handler already registered for event: $event, skipping');
-      return;
-    }
+    // Note: We're removing this check as it's causing issues with event handlers not being registered
+    // if (_eventListeners[event]!.contains(handler)) {
+    //   print('Handler already registered for event: $event, skipping');
+    //   return;
+    // }
 
+    // Always register the handler - even if it appears to be a duplicate
     _eventListeners[event]!.add(handler);
 
-    // Remove any existing handlers for this event to prevent duplicates
-    _socket!.off(event);
-
-    // Add to actual socket
+    // Important: Don't remove existing handlers as that breaks event handling
+    // Instead, add this handler alongside existing ones
     _socket!.on(event, handler);
-    print('Added listener for event: $event');
+    print('Added listener for event: $event, total handlers: ${_eventListeners[event]!.length}');
   }
 
   /// Remove specific event listener
